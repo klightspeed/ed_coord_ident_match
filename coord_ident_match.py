@@ -1,5 +1,5 @@
 
-# pip install astropy astroquery mysqlclient rapidfuzz frozendict
+# pip install astropy astroquery mysqlclient rapidfuzz frozendict pywikibot
 
 import math
 import json
@@ -30,9 +30,11 @@ import re
 import traceback
 import pdb
 import urllib.request
+import urllib.parse
 import random
 import os
 import sys
+import pywikibot
 from datetime import date, timedelta
 
 
@@ -183,7 +185,7 @@ r_bynn = '(?P<bayerNN>[0-9][1-9]|[1-9][0-9])'
 r_const = f'(?P<const>{r_constel}|{r_cst})'
 r_num = '(?P<num>[1-9][0-9]*)'
 
-viz_cat_cache = {}
+viz_cat_cache: dict[str, list[Table]] = {}
 known_systems = None
 
 
@@ -212,6 +214,8 @@ class CatQuery:
 class MatchIdent:
     ident: str
     maxdist: float = 1.0
+    is_alt_name: bool = False
+    source: str|None = None
 
 
 @dataclass(frozen=True)
@@ -234,6 +238,7 @@ class SimbadMatch:
     sys_dist: u.Quantity[u.lightyear]
     simbad: SimbadEntry|None = None
     matched_name: str|None = None
+    match_source: str|None = None
     dist_plx: float|None = None
     dist_ly: float|None = None
     dist_deg: float|None = None
@@ -247,6 +252,7 @@ class SimbadMatch:
     dist_lev_punct: float|None = None
     dist_dlev: float|None = None
     dist_dlev_punct: float|None = None
+    is_alt_name: bool = False
 
 
 class SimbadDBMatch(NamedTuple):
@@ -263,6 +269,7 @@ class SimbadDBMatch(NamedTuple):
     simbad_dec: float
     simbad_plx: float
     matched_name: str|None = None
+    match_source: str|None = None
     dist_plx: float|None = None
     dist_ly: float|None = None
     dist_deg: float|None = None
@@ -584,79 +591,63 @@ class SystemQueryMariaDB(SystemQueryDatabase):
 
             sys_coords: list[dict] = []
 
+            sys.stderr.write('[query_coords] ')
+            sys.stderr.flush()
+
             for match in matches:
                 (search_radius, search_ra_range) = calc_search_radius_ra_range(match.sys_dist, match.sys_dec)
                 sys_ra = float(match.sys_ra / u.deg)
                 sys_dec = float(match.sys_dec / u.deg)
                 sys_dist = float(match.sys_dist / u.lightyear)
-                
-                sys_coords.append({
-                    'sys_name': match.sys_name,
-                    'sys_addr': match.sys_addr,
-                    'frame': match.frame,
-                    'sys_ra': sys_ra,
-                    'sys_dec': sys_dec,
-                    'sys_dist': sys_dist,
-                    'search_radius': search_radius,
-                    'search_ra_range': search_ra_range
-                })
 
-            json_data = json.dumps(list(sys_coords))
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                        SELECT
+                            basic.oid,
+                            basic.main_id,
+                            ident.id,
+                            basic.ra,
+                            basic.`dec`,
+                            basic.plx_value
+                        FROM simbad_basic basic
+                        JOIN simbad_ident ident ON ident.oidref = basic.oid
+                        WHERE basic.`dec` BETWEEN %(sys_dec)s - %(search_radius)s AND %(sys_dec)s + %(search_radius)s
+                          AND (ABS(%(sys_dec)s) > 90 - %(search_radius)s
+                           OR basic.`ra` BETWEEN %(sys_ra)s - %(search_ra_range)s AND %(sys_ra)s + %(search_ra_range)s
+                           OR basic.`ra` BETWEEN %(sys_ra)s - 360 - %(search_ra_range)s AND %(sys_ra)s - 360 + %(search_ra_range)s
+                           OR basic.`ra` BETWEEN %(sys_ra)s + 360 - %(search_ra_range)s AND %(sys_ra)s + 360 + %(search_ra_range)s)
+                    """,
+                    {
+                        'sys_ra': sys_ra,
+                        'sys_dec': sys_dec,
+                        'search_radius': search_radius,
+                        'search_ra_range': search_ra_range
+                    }
+                )
 
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                    SELECT
-                        sys_coords.sys_name,
-                        sys_coords.sys_addr,
-                        sys_coords.frame,
-                        sys_coords.sys_ra,
-                        sys_coords.sys_dec,
-                        sys_coords.sys_dist,
-                        sys_coords.search_radius,
-                        basic.oid,
-                        basic.main_id,
-                        ident.id,
-                        basic.ra,
-                        basic.`dec`,
-                        basic.plx_value
-                    FROM JSON_TABLE(%s, '$[*]' COLUMNS(
-                        sys_name VARCHAR(255) PATH '$.sys_name',
-                        sys_addr BIGINT PATH '$.sys_addr',
-                        frame VARCHAR(50) PATH '$.frame',
-                        sys_ra DECIMAL(12, 8) PATH '$.sys_ra',
-                        sys_dec DECIMAL(12, 8) PATH '$.sys_dec',
-                        sys_dist DECIMAL(12, 6) PATH '$.sys_dist',
-                        search_radius DECIMAL(12, 8) PATH '$.search_radius',
-                        search_ra_range DECIMAL(12, 8) PATH '$.search_ra_range'
-                    )) sys_coords
-                    JOIN simbad_basic basic ON basic.`dec` BETWEEN sys_dec - search_radius AND sys_dec + search_radius
-                    JOIN simbad_ident ident ON ident.oidref = basic.oid
-                    WHERE ABS(sys_dec) > 90 - search_radius
-                    OR basic.`ra` BETWEEN sys_ra - search_ra_range AND sys_ra + search_ra_range
-                    OR basic.`ra` BETWEEN sys_ra - 360 - search_ra_range AND sys_ra - 360 + search_ra_range
-                    OR basic.`ra` BETWEEN sys_ra + 360 - search_ra_range AND sys_ra + 360 + search_ra_range
-                """,
-                (json_data,)
-            )
+                for sb_oid, sb_main_id, sb_id, sb_ra, sb_dec, sb_plx in cursor.fetchall():
+                    dist_deg = angular_separation(float(sys_ra), float(sys_dec), float(sb_ra), float(sb_dec)) << u.deg
+                    if dist_deg.value < search_radius:
+                        entries.append(SimbadTableMatch(
+                            str(match.sys_name),
+                            int(match.sys_addr),
+                            str(match.frame),
+                            float(sys_ra),
+                            float(sys_dec),
+                            float(sys_dist),
+                            int(sb_oid),
+                            str(sb_main_id),
+                            str(sb_id),
+                            float(sb_ra),
+                            float(sb_dec),
+                            float(sb_plx) if sb_plx is not None else None
+                        ))
 
-            for sys_name, sys_addr, frame, sys_ra, sys_dec, sys_dist, search_radius, sb_oid, sb_main_id, sb_id, sb_ra, sb_dec, sb_plx in cursor.fetchall():
-                dist_deg = angular_separation(float(sys_ra), float(sys_dec), float(sb_ra), float(sb_dec)) << u.deg
-                if dist_deg.value < search_radius:
-                    entries.add(SimbadTableMatch(
-                        str(sys_name),
-                        int(sys_addr),
-                        str(frame),
-                        float(sys_ra),
-                        float(sys_dec),
-                        float(sys_dist),
-                        int(sb_oid),
-                        str(sb_main_id),
-                        str(sb_id),
-                        float(sb_ra),
-                        float(sb_dec),
-                        float(sb_plx)
-                    ))
+                sys.stderr.write('.')
+                sys.stderr.flush()
+            
+            sys.stderr.write(f' {len(entries)}\n')
 
             return entries
 
@@ -733,7 +724,8 @@ class SystemQueryMariaDB(SystemQueryDatabase):
                         simbad_dec DECIMAL(12, 8) NOT NULL,
                         simbad_plx DECIMAL(12, 8) NULL,
                         matched_name VARCHAR(255) NOT NULL,
-                        dist_plx DECIMAL(12, 8) NOT NULL,
+                        match_source VARCHAR(255) NULL,
+                        dist_plx DECIMAL(12, 6) NULL,
                         dist_ly DECIMAL(12, 6) NOT NULL,
                         dist_deg DECIMAL(12, 8) NOT NULL,
                         dist_jw DECIMAL(12, 8) NOT NULL,
@@ -955,7 +947,6 @@ class SystemQueryMariaDB(SystemQueryDatabase):
                     OR basic.`ra` BETWEEN sys_ra - search_ra_range AND sys_ra + search_ra_range
                     OR basic.`ra` BETWEEN sys_ra - 360 - search_ra_range AND sys_ra - 360 + search_ra_range
                     OR basic.`ra` BETWEEN sys_ra + 360 - search_ra_range AND sys_ra + 360 + search_ra_range
-                    ORDER BY sys_coords.sys_name, sys_coords.sys_addr, sys_coords.frame
                 """
             )
 
@@ -1032,6 +1023,7 @@ class SystemQueryMariaDB(SystemQueryDatabase):
                     simbad_dec,
                     simbad_plx,
                     matched_name,
+                    match_source,
                     dist_plx,
                     dist_ly,
                     dist_deg,
@@ -1046,6 +1038,7 @@ class SystemQueryMariaDB(SystemQueryDatabase):
                     dist_dlev,
                     dist_dlev_punct
                 ) VALUES (
+                    %s,
                     %s,
                     %s,
                     %s,
@@ -1391,7 +1384,8 @@ class SystemQuerySqlite3(SystemQueryDatabase):
                     simbad_dec REAL NOT NULL,
                     simbad_plx REAL NULL,
                     matched_name TEXT NOT NULL,
-                    dist_plx REAL NOT NULL,
+                    match_source TEXT NULL,
+                    dist_plx REAL NULL,
                     dist_ly REAL NOT NULL,
                     dist_deg REAL NOT NULL,
                     dist_jw REAL NOT NULL,
@@ -1632,6 +1626,7 @@ class SystemQuerySqlite3(SystemQueryDatabase):
                     simbad_dec,
                     simbad_plx,
                     matched_name,
+                    match_source,
                     dist_plx,
                     dist_ly,
                     dist_deg,
@@ -1646,6 +1641,7 @@ class SystemQuerySqlite3(SystemQueryDatabase):
                     dist_dlev,
                     dist_dlev_punct
                 ) VALUES (
+                    ?,
                     ?,
                     ?,
                     ?,
@@ -1774,15 +1770,19 @@ def get_ed_known_systems(name_or_id: str|int) -> Generator[str]:
                 yield f'GJ {gliese[3:]}'
 
 
+def get_vizier_cat(catname: str) -> Table:
+    vc = viz_cat_cache.get(catname)
+
+    if vc is None:
+        vizier = Vizier(row_limit=-1)
+        vc = viz_cat_cache.setdefault(catname, vizier.get_catalogs(catname))
+
+    return vc[0]
+
+
 def query_cat(cat: CatQuery) -> Generator[str|MatchIdent]:
     if cat.source == 'Vizier':
-        vc = viz_cat_cache.get(cat.catalogue)
-
-        if vc is None:
-            vizier = Vizier(row_limit=-1)
-            vc = viz_cat_cache.setdefault(cat.catalogue, vizier.get_catalogs(cat.catalogue))
-
-        tbl = vc[0]
+        tbl = get_vizier_cat(cat.catalogue)
         mask = None
 
         for n, v in cat.cat_filter.items():
@@ -1792,7 +1792,7 @@ def query_cat(cat: CatQuery) -> Generator[str|MatchIdent]:
                 mask &= tbl[n] == v
 
         for row in tbl[mask]:
-            yield cat.result.format(** { k: row.get(k) for k in row.keys() })
+            yield MatchIdent(cat.result.format(** { k: row.get(k) for k in row.keys() }), source=f'{cat.source}:{cat.catalogue}')
 
 
 def s_bayer_p(m: re.Match) -> str:
@@ -1830,8 +1830,14 @@ def s_gould(m: re.Match) -> CatQuery:
     return CatQuery('Vizier', 'V/135A/catalog', frozendict({ 'G': sn, 'cst': cn }), 'HD {HD}')
 
 
+def s_gould_rev(m: re.Match) -> MatchIdent:
+    return MatchIdent(f'* {m.group('num')}G {s_const(m)}', source='[Vizier:V/135A/catalog]')
+
+
 patterns: list[tuple[re.Pattern, list[Callable[[re.Match], str|CatQuery|MatchIdent|None]]]] = [
-    (re.compile('^.*$'), [lambda m: MatchIdent(f'NAME {m.group(0)}', 0.1)]),
+    (re.compile('^.*$'),
+     [lambda m: MatchIdent(f'NAME {m.group(0)}', 0.1),
+      lambda m: MatchIdent(f'HIDDEN NAME {m.group(0)}', 0.1)]),
     (re.compile(f'^(?:[*] )?{r_bayer} {r_const}', re.IGNORECASE), [s_bayer]),
     (re.compile(f'^(?:[*] )?{r_bayer}[ -]?{r_byn} {r_const}', re.IGNORECASE), [s_bayer_n]),
     (re.compile(f'^(?:[*] )?{r_bayer}[ -]?{r_bynn} {r_const}', re.IGNORECASE), [s_bayer_nn]),
@@ -1841,7 +1847,7 @@ patterns: list[tuple[re.Pattern, list[Callable[[re.Match], str|CatQuery|MatchIde
     (re.compile(f'^(?:[*] )?{r_num} {r_bayer}[ -]?{r_bynn} {r_const}', re.IGNORECASE), [s_bayer_nn, s_flamsteed]),
     (re.compile(f'^(?:V?[*] )?{r_num} (?P<var>[A-Z]) {r_const}', re.IGNORECASE), [s_varstar, s_flamsteed]),
     (re.compile(f'^(?:V?[*] )?{r_num} (?P<var>[A-Z][A-Z]) {r_const}', re.IGNORECASE), [s_varstar, s_flamsteed]),
-    (re.compile(f'^{r_num} G\\. ?{r_const}', re.IGNORECASE), [s_gould]),
+    (re.compile(f'^{r_num} G\\. ?{r_const}', re.IGNORECASE), [s_gould, s_gould_rev]),
     (re.compile(f'^(?:V?[*] )?(?P<var>[A-Z]) {r_const}', re.IGNORECASE), [s_varstar]),
     (re.compile(f'^(?:V?[*] )?(?P<var>[A-Z][A-Z]) {r_const}', re.IGNORECASE), [s_varstar]),
     (re.compile(f'^(?:V?[*] )?(?P<var>V[0-9]+) {r_const}', re.IGNORECASE), [s_varstar]),
@@ -1884,8 +1890,12 @@ patterns: list[tuple[re.Pattern, list[Callable[[re.Match], str|CatQuery|MatchIde
     (re.compile('^LOrionis-(CFHT|SOC|MAD) ([0-9]+)', re.IGNORECASE),
      [lambda m: f'LOri-{m.group(1)} {m.group(2):>3}']),
     (re.compile('^(Cyg|Nor|TrA)(?:ni)? (X-[1-9])', re.IGNORECASE),
-     [lambda m: f'X {m.group(1)} {m.group(2)}']),]
-
+     [lambda m: f'X {m.group(1)} {m.group(2)}']),
+    (re.compile(f'(.*?) {r_const}', re.IGNORECASE),
+     [lambda m: f'NAME {m.group(1)} {s_const(m)}',
+      lambda m: f'HIDDEN NAME {m.group(1)} {s_const(m)}',
+      lambda m: f'{m.group(1)} {s_const(m)}'])
+]
 
 def get_match_names(name: str) -> set[str|MatchIdent]:
     names = {name}
@@ -1910,7 +1920,7 @@ def get_match_names(name: str) -> set[str|MatchIdent]:
     return names
 
 
-def add_fuzz_distances(match: SimbadMatch, simbad: SimbadEntry, name: str) -> SimbadMatch:
+def add_fuzz_distances(match: SimbadMatch, simbad: SimbadEntry, name: str, is_alt_name: bool = False, source: str|None = None) -> SimbadMatch:
     dist_deg = angular_separation(match.sys_ra, match.sys_dec, simbad.ra, simbad.dec) << u.deg
     dist_ly = float((dist_deg << u.radian) * match.sys_dist / u.lightyear / u.radian)
     dist_deg = float(dist_deg / u.deg)
@@ -1922,15 +1932,16 @@ def add_fuzz_distances(match: SimbadMatch, simbad: SimbadEntry, name: str) -> Si
     sys_plx = 1000 * u.mas * u.parsec / (match.sys_dist << u.parsec)
 
     if simbad.plx is not None:
-        dist_plx = float(abs(simbad.plx.value - sys_plx.value) / max(10, simbad.plx.value, sys_plx.value))
+        dist_plx = float(abs(simbad.plx.value - sys_plx.value))
     else:
-        dist_plx = 0.02
+        dist_plx = None
 
     return dataclasses.replace(
         match,
         simbad=simbad,
         matched_name=name,
-        dist_plx=round(dist_plx, 6),
+        match_source=source,
+        dist_plx=round(dist_plx, 6) if dist_plx is not None else None,
         dist_ly=round(dist_ly, 6),
         dist_deg=round(dist_deg, 6),
         dist_jw=round(JaroWinkler.normalized_distance(lname, lident), 6),
@@ -1942,8 +1953,56 @@ def add_fuzz_distances(match: SimbadMatch, simbad: SimbadEntry, name: str) -> Si
         dist_indel_punct=round(Indel.normalized_distance(xname, xident), 6),
         dist_dlev_punct=round(DamerauLevenshtein.normalized_distance(xname, xident), 6),
         dist_hamming_punct=round(Hamming.normalized_distance(xname, xident), 6),
-        dist_lev_punct=round(Levenshtein.normalized_distance(xname, xident), 6)
+        dist_lev_punct=round(Levenshtein.normalized_distance(xname, xident), 6),
+        is_alt_name=is_alt_name
     )
+
+
+def get_wikipedia_starbox_simbad_reference(name: str) -> str|None:
+    wiki_site = pywikibot.Site('en', 'wikipedia')
+    wiki_page = pywikibot.Page(wiki_site, name)
+
+    if wiki_page.exists():
+        if wiki_page.isRedirectPage():
+            wiki_page = wiki_page.getRedirectTarget()
+        
+        for t, p in wiki_page.templatesWithParams():
+            if t.title() == 'Template:Starbox reference':
+                for r in p:
+                    n, v = r.split('=', 2)
+                    if n.lower() == 'simbad':
+                        return urllib.parse.unquote(v.replace('+',' '))
+
+
+def filter_matches(sy_matches: set[SimbadMatch]) -> tuple[bool, set[SimbadMatch]]:
+    if any(m.dist_ly < 0.1 and m.dist_indel == 0 and not m.is_alt_name for m in sy_matches):
+        return (True, set((m for m in sy_matches if m.dist_ly < 0.1 and m.dist_indel == 0 and not m.is_alt_name)))
+    elif any(m.dist_ly < 0.1 and min(m.dist_indel, m.dist_jw) < 0.1 and m.dist_plx is not None and m.dist_plx < 10 and not m.is_alt_name for m in sy_matches):
+        return (True, set((m for m in sy_matches if ((m.dist_ly < 0.1 and min(m.dist_indel, m.dist_jw) < 0.1 and m.dist_plx is not None and m.dist_plx < 10) or m.dist_indel == 0) and not m.is_alt_name)))
+    elif any(m.dist_deg < 0.1 and min(m.dist_indel, m.dist_jw) < 0.1 and m.dist_plx is not None and m.dist_plx < 10 and not m.is_alt_name for m in sy_matches):
+        return (True, set((m for m in sy_matches if ((m.dist_deg < 0.1 and min(m.dist_indel, m.dist_jw) < 0.1 and m.dist_plx is not None and m.dist_plx < 10) or m.dist_indel == 0) and not m.is_alt_name)))
+    elif any(m.dist_ly < 0.1 and min(m.dist_indel, m.dist_jw) < 0.1 and not m.is_alt_name for m in sy_matches):
+        return (True, set((m for m in sy_matches if ((m.dist_ly < 0.1 and min(m.dist_indel, m.dist_jw) < 0.1) or m.dist_indel == 0) and not m.is_alt_name)))
+    elif any(m.dist_deg < 0.1 and min(m.dist_indel, m.dist_jw) < 0.1 and not m.is_alt_name for m in sy_matches):
+        return (True, set((m for m in sy_matches if ((m.dist_deg < 0.1 and min(m.dist_indel, m.dist_jw) < 0.1) or m.dist_indel == 0) and not m.is_alt_name)))
+    return (False, sy_matches)
+
+
+def get_rev_matches(source: str, simbad: SimbadEntry) -> Iterable[tuple[str,SimbadEntry]]:
+    if source == '[Vizier:V/135A/catalog]':
+        if simbad.ident.startswith('HD ') and len(simbad.ident) == 9:
+            hdnum = simbad.ident[3:]
+            tbl = get_vizier_cat('V/135A/catalog')
+
+            mask = tbl['HD'] == int(hdnum.strip())
+
+            for row in tbl[mask]:
+                yield (f'[Vizier:V/135A/catalog(HD={hdnum})]', dataclasses.replace(
+                    simbad,
+                    ident=f'* {row['Name']}'
+                ))
+    else:
+        yield (source, simbad)
 
 
 def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str, set[SimbadEntry]]) -> set[SimbadMatch]:
@@ -1967,20 +2026,25 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
         names = get_match_names(sy_name)
 
         for name in get_ed_known_systems(sy_name):
-            names.add(name)
+            names.add(MatchIdent(name, is_alt_name=True, source='known_systems'))
 
         for name in get_ed_known_systems(sy_addr):
-            names.add(name)
+            names.add(MatchIdent(name, is_alt_name=True, source='known_systems'))
 
         if sy_matches is None:
             sy_matches = sys_matches.setdefault(entry, {})
 
             for name in names:
+                is_alt_name = False
+                source = None
+
                 if isinstance(name, MatchIdent):
+                    is_alt_name = name.is_alt_name
+                    source = name.source
                     name = name.ident
 
                 for ident in idents.get(space_re.sub(' ', utils.default_process(name.strip().lower())), []):
-                    sy_matches.setdefault(name, set()).add(ident)
+                    sy_matches.setdefault((name, is_alt_name, source), set()).add(ident)
 
         if sb_oid is not None:
             sb_entry = SimbadEntry(
@@ -1996,9 +2060,13 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
 
             for name in names:
                 max_dist = 1.0
+                is_alt_name = False
+                source = None
 
                 if isinstance(name, MatchIdent):
                     max_dist = name.maxdist
+                    is_alt_name = name.is_alt_name
+                    source = name.source
                     name = name.ident
 
                 lname = space_re.sub(' ', name.lower())
@@ -2008,24 +2076,44 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
                 if dist_indel > max_dist:
                     continue
 
-                sy_matches.setdefault(name, set()).add(sb_entry)
+                sy_matches.setdefault((name, is_alt_name, source), set()).add(sb_entry)
 
     for na, entries in base_matches.items():
         sy_matches = set()
+        sb_entries = set()
 
         for entry, names in entries.items():
-            for name, nmatches in names.items():
+            for (name, is_alt_name, source), nmatches in names.items():
                 for sb_entry in nmatches:
-                    sy_matches.add(add_fuzz_distances(entry, sb_entry, name))
+                    sb_entries.add(sb_entry)
 
-        if any(m.dist_ly < 0.1 and m.dist_indel < 0.1 and m.dist_plx < 0.1 for m in sy_matches):
-            sy_matches = [m for m in sy_matches if m.dist_ly < 0.1 and m.dist_indel < 0.1 and m.dist_plx < 0.1]
-        elif any(m.dist_deg < 0.1 and m.dist_indel < 0.1 and m.dist_plx < 0.1 for m in sy_matches):
-            sy_matches = [m for m in sy_matches if m.dist_deg < 0.1 and m.dist_indel < 0.1 and m.dist_plx < 0.1]
-        elif any(m.dist_ly < 0.1 and m.dist_indel < 0.1 for m in sy_matches):
-            sy_matches = [m for m in sy_matches if m.dist_ly < 0.1 and m.dist_indel < 0.1]
-        elif any(m.dist_deg < 0.1 and m.dist_indel < 0.1 for m in sy_matches):
-            sy_matches = [m for m in sy_matches if m.dist_deg < 0.1 and m.dist_indel < 0.1]
+                    for src, sb_sub in get_rev_matches(source, sb_entry):
+                        sy_matches.add(add_fuzz_distances(entry, sb_sub, name, is_alt_name, src))
+
+        is_match, sy_matches = filter_matches(sy_matches)
+
+        if not is_match and not any(min(m.dist_indel, m.dist_jw) < 0.1 and not m.is_alt_name for m in sy_matches):
+            sys.stderr.write(f'Querying Wikipedia for {na[0]}\n')
+            wiki_simbad = get_wikipedia_starbox_simbad_reference(na[0])
+
+            if wiki_simbad is not None:
+                for entry, _ in entries.items():
+                    for sb_entry in sb_entries:
+                        sy_matches.add(add_fuzz_distances(entry, sb_entry, wiki_simbad, False, 'wikipedia'))
+                
+                is_match, sy_matches = filter_matches(sy_matches)
+
+        if not is_match:
+            if any(min(m.dist_indel, m.dist_jw) == 0 and not m.is_alt_name for m in sy_matches):
+                min_dist_deg = min((m.dist_deg for m in sy_matches if min(m.dist_indel, m.dist_jw) == 0 and not m.is_alt_name))
+                sys.stderr.write(f'System {na[0]} [{na[1]}] name match, dist_deg={min_dist_deg}\n')
+            elif any(min(m.dist_indel, m.dist_jw) < 0.1 and not m.is_alt_name for m in sy_matches):
+                min_dist_deg = min((m.dist_deg for m in sy_matches if min(m.dist_indel, m.dist_jw) < 0.1 and not m.is_alt_name))
+                sys.stderr.write(f'System {na[0]} [{na[1]}] fuzzy name match, dist_deg={min_dist_deg}\n')
+            else:
+                sys.stderr.write(f'System {na[0]} [{na[1]}] no name match\n')
+
+        sy_matches = set((next(iter(sorted(g, key=lambda m: m.dist_deg))) for _, g in itertools.groupby(sy_matches, key=lambda m: (m.simbad, m.matched_name))))
 
         for match in sy_matches:
             matches.add(match)
@@ -2148,6 +2236,7 @@ def save_matches_db(matches: set[SimbadMatch], systemquery: SystemQueryDatabase,
             float((match.simbad.dec << u.deg) / u.deg),
             float((match.simbad.plx << u.mas) / u.mas) if match.simbad.plx is not None else None,
             str(match.matched_name),
+            str(match.match_source),
             match.dist_plx,
             match.dist_ly,
             match.dist_deg,
@@ -2194,9 +2283,9 @@ def save_matches_db(matches: set[SimbadMatch], systemquery: SystemQueryDatabase,
 def process_matches_db(systemquery: SystemQueryDatabase):
     print('Processing matches in DB')
 
-    row_iter = systemquery.get_syscoords()
+    row_iter = list(systemquery.get_syscoords())
 
-    rows = set()
+    rows = []
     sysaddrs = set()
 
     matchcount = 0
@@ -2204,15 +2293,15 @@ def process_matches_db(systemquery: SystemQueryDatabase):
     matches_by_system = {}
 
     for row in row_iter:
-        if row.sys_addr not in sysaddrs and len(rows) != 0 and (len(sysaddrs) % 100) == 0:
-            sys.stderr.write(f'Processing {len(rows)} rows from {len(sysaddrs)} systems\n')
+        if row.sys_addr not in sysaddrs and len(rows) != 0 and (len(sysaddrs) % 10) == 0:
+            sys.stderr.write(f'Processing {len(rows)} rows from {len(sysaddrs)} systems [{rows[0].sys_name} .. {rows[-1].sys_name}]\n')
             matches = match_simbad_syscoords(rows, systemquery)
             save_matches_db(matches, systemquery, matches_by_system)
             matchcount += len(matches)
             sys.stderr.write(f'Processed {matchcount} matches from {len(sysaddrs)} systems\n')
-            rows = set()
+            rows = []
 
-        rows.add(row)
+        rows.append(row)
         sysaddrs.add(row.sys_addr)
 
     sys.stderr.write(f'Processing {len(rows)} rows from {len(sysaddrs)} systems\n')
