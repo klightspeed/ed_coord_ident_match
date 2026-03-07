@@ -1835,9 +1835,9 @@ def s_gould_rev(m: re.Match) -> MatchIdent:
 
 
 patterns: list[tuple[re.Pattern, list[Callable[[re.Match], str|CatQuery|MatchIdent|None]]]] = [
-    (re.compile('^.*$'),
-     [lambda m: MatchIdent(f'NAME {m.group(0)}', 0.1),
-      lambda m: MatchIdent(f'HIDDEN NAME {m.group(0)}', 0.1)]),
+    (re.compile(r'^(?:NAME )?(.*)$'),
+     [lambda m: MatchIdent(f'NAME {m.group(1)}', 0.1),
+      lambda m: MatchIdent(f'HIDDEN NAME {m.group(1)}', 0.1)]),
     (re.compile(f'^(?:[*] )?{r_bayer} {r_const}', re.IGNORECASE), [s_bayer]),
     (re.compile(f'^(?:[*] )?{r_bayer}[ -]?{r_byn} {r_const}', re.IGNORECASE), [s_bayer_n]),
     (re.compile(f'^(?:[*] )?{r_bayer}[ -]?{r_bynn} {r_const}', re.IGNORECASE), [s_bayer_nn]),
@@ -1853,43 +1853,43 @@ patterns: list[tuple[re.Pattern, list[Callable[[re.Match], str|CatQuery|MatchIde
     (re.compile(f'^(?:V?[*] )?(?P<var>V[0-9]+) {r_const}', re.IGNORECASE), [s_varstar]),
     (re.compile(f'^(?:V?[*] )?V0(?P<var>[1-9][0-9]+) {r_const}', re.IGNORECASE),
      [lambda m: f'V* V{m.group('var')} {s_const(m)}']),
-    (re.compile('^(BAG|BAR|BRT|COO|CPO|DON|EGN|HDS|HJ|KUI|LDS|MET|RMK|RST|STF|WSI) ([0-9]+)', re.IGNORECASE),
+    (re.compile('^(?:[*][*] )?(BAG|BAR|BRT|COO|CPO|DON|EGN|HDS|HJ|KUI|LDS|MET|RMK|RST|STF|WSI) ([0-9]+)', re.IGNORECASE),
      [lambda m: f'** {m.group(1)} {m.group(2):>4}']),
     (re.compile('^(?:EM[*] )?(CDS|LkHA|GGA|GGR|MWC|StHA|VES) ([0-9]+)', re.IGNORECASE),
      [lambda m: f'EM* {m.group(1)} {m.group(2):>4}']),
     (re.compile('^(AD95|BB2009|BBG2010|BBS2011|BJG2004|BSM2011|CPO2009|DBP2006|DM99|DML87|FHM2008|FMS2006|GFT2002|GHJ2008|GMB2010|GMM2008|GMM2009|GMW2007|GVS98|GZB2006|H97b|HD2002|HFR2007|HGM2009b|HRF2005|IHA2007|IHA2008|JBM2010|JVD2011|KAG2008|KW97|LAL96|MJD95|MKS2009|MMS2011|MSJ2009|MSR2009|OJV2009|OTS2008|OW94|PCB2009|PMD2009|PW2010|RBB2002|S87b|SHB2004|SHD2009|SNM2009|WBG2011|WMW2010|YSD2013) (.*)', re.IGNORECASE),
      [lambda m: f'[{m.group(1)}] {m.group(2)}']),
 
-    (re.compile('^(?:Cl )?(NGC|Pismis|Trumpler|IC|Melotte) ([0-9]+) ([0-9]+)', re.IGNORECASE),
+    (re.compile(r'^(?:Cl )?(NGC|Pismis|Trumpler|IC|Melotte) ([0-9]+) ([0-9]+)', re.IGNORECASE),
      [lambda m: f'Cl {m.group(1)} {m.group(2):>4} {m.group(3):>5}']),
-    (re.compile('^(?:Cl[*] )?(NGC|Trumpler|Blanco|Haffner|Melotte|IC|Stock) ([0-9]+) ([A-Z]+) ([0-9A-Z-]+)', re.IGNORECASE),
+    (re.compile(r'^(?:Cl[*] )?(NGC|Trumpler|Blanco|Haffner|Melotte|IC|Stock) ([0-9]+) ([A-Z]+) ([0-9A-Z-]+)', re.IGNORECASE),
      [lambda m: f'Cl* {m.group(1)} {m.group(2):>4} {m.group(3):>6} {m.group(4):>7}']),
 
-    (re.compile('^CFHT-BL-([0-9]+)', re.IGNORECASE),
-     [lambda m: f'[MBS2007b] {m.group(0)}']),
-    (re.compile('^S171 [0-9]+', re.IGNORECASE),
-     [lambda m: f'[GMM2009] {m.group(0)}']),
-    (re.compile('^DEN ([0-9]{4})([+-][0-9]{4})', re.IGNORECASE),
+    (re.compile(r'^(?:\[MBS2007b\] )?(CFHT-BL-[0-9]+)', re.IGNORECASE),
+     [lambda m: f'[MBS2007b] {m.group(1)}']),
+    (re.compile(r'^(?:\[GMM2009\] )?(S171 [0-9]+)', re.IGNORECASE),
+     [lambda m: f'[GMM2009] {m.group(1)}']),
+    (re.compile(r'^DEN ([0-9]{4})([+-][0-9]{4})', re.IGNORECASE),
      [lambda m: f'DENIS J{m.group(1)}.0{m.group(2)}']),
-    (re.compile('^GRS (.*)', re.IGNORECASE),
+    (re.compile(r'^GRS (.*)', re.IGNORECASE),
      [lambda m: f'Granat {m.group(1)}']),
-    (re.compile('^(?:Gmb|GMB|Groombridge) (.*)', re.IGNORECASE),
+    (re.compile(r'^(?:Gmb|GMB|Groombridge) (.*)', re.IGNORECASE),
      [lambda m: f'Gmb {m.group(1):>4}']),
-    (re.compile('^Kruger (.*)', re.IGNORECASE),
+    (re.compile(r'^Kruger (.*)', re.IGNORECASE),
      [lambda m: f'** KR {m.group(1):>4}']),
-    (re.compile('^(?:GJ|Gl|Gliese|NN|Wo) (.*)', re.IGNORECASE),
+    (re.compile(r'^(?:GJ|Gl|Gliese|NN|Wo) (.*)', re.IGNORECASE),
      [lambda m: f'GJ {m.group(1)}']),
-    (re.compile('^(?:Lalande) (.*)', re.IGNORECASE),
+    (re.compile(r'^(?:Lalande) (.*)', re.IGNORECASE),
      [lambda m: f'LAL {m.group(1)}']),
-    (re.compile('^KOI ([0-9]+)', re.IGNORECASE),
+    (re.compile(r'^KOI ([0-9]+)', re.IGNORECASE),
      [lambda m: f'KOI-{m.group(1)}']),
-    (re.compile('^MOA-([0-9]{4}-BLG-[0-9]+)', re.IGNORECASE),
+    (re.compile(r'^MOA-([0-9]{4}-BLG-[0-9]+)', re.IGNORECASE),
      [lambda m: f'MOA {m.group(1)}']),
-    (re.compile('^OGLE-TR-([0-9]+)', re.IGNORECASE),
+    (re.compile(r'^OGLE-TR-([0-9]+)', re.IGNORECASE),
      [lambda m: f'OGLE-TR {m.group(1)}']),
-    (re.compile('^LOrionis-(CFHT|SOC|MAD) ([0-9]+)', re.IGNORECASE),
+    (re.compile(r'^LOrionis-(CFHT|SOC|MAD) ([0-9]+)', re.IGNORECASE),
      [lambda m: f'LOri-{m.group(1)} {m.group(2):>3}']),
-    (re.compile('^(Cyg|Nor|TrA)(?:ni)? (X-[1-9])', re.IGNORECASE),
+    (re.compile(r'^(Cyg|Nor|TrA)(?:ni)? (X-[1-9])', re.IGNORECASE),
      [lambda m: f'X {m.group(1)} {m.group(2)}']),
     (re.compile(f'(.*?) {r_const}', re.IGNORECASE),
      [lambda m: f'NAME {m.group(1)} {s_const(m)}',
@@ -1961,17 +1961,36 @@ def add_fuzz_distances(match: SimbadMatch, simbad: SimbadEntry, name: str, is_al
 def get_wikipedia_starbox_simbad_reference(name: str) -> str|None:
     wiki_site = pywikibot.Site('en', 'wikipedia')
     wiki_page = pywikibot.Page(wiki_site, name)
+    with sqlite3.connect('wikipedia.sqlite') as conn:
+        cursor = conn.cursor()
+        cursor.execute('CREATE TABLE IF NOT EXISTS wiki_simbad (name TEXT NOT NULL UNIQUE, simbad TEXT NULL) STRICT')
 
-    if wiki_page.exists():
-        if wiki_page.isRedirectPage():
-            wiki_page = wiki_page.getRedirectTarget()
-        
-        for t, p in wiki_page.templatesWithParams():
-            if t.title() == 'Template:Starbox reference':
-                for r in p:
-                    n, v = r.split('=', 2)
-                    if n.lower() == 'simbad':
-                        return urllib.parse.unquote(v.replace('+',' '))
+        cursor = conn.cursor()
+        cursor.execute('SELECT name, simbad FROM wiki_simbad WHERE name = ?', (name,))
+        simbad = cursor.fetchone()
+
+        if simbad is None:
+            simbad = (name, None)
+
+            try:
+                if wiki_page.exists():
+                    if wiki_page.isRedirectPage():
+                        wiki_page = wiki_page.getRedirectTarget()
+                    
+                    for t, p in wiki_page.templatesWithParams():
+                        if t.title() == 'Template:Starbox reference':
+                            for r in p:
+                                n, v = r.split('=', 2)
+                                if n.lower() == 'simbad':
+                                    simbad = (name, urllib.parse.unquote(v.replace('+',' ')))
+            except Exception:
+                pass
+            
+            cursor = conn.cursor()
+            cursor.execute('INSERT INTO wiki_simbad (name, simbad) VALUES (?, ?)', simbad)
+            conn.commit()
+
+        return simbad[1]
 
 
 def filter_matches(sy_matches: set[SimbadMatch]) -> tuple[bool, set[SimbadMatch]]:
@@ -2005,7 +2024,7 @@ def get_rev_matches(source: str, simbad: SimbadEntry) -> Iterable[tuple[str,Simb
         yield (source, simbad)
 
 
-def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str, set[SimbadEntry]]) -> set[SimbadMatch]:
+def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str, set[SimbadEntry]], systemquery: SystemQueryBase) -> set[SimbadMatch]:
     matches = set()
     base_matches = {}
 
@@ -2097,10 +2116,38 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
             wiki_simbad = get_wikipedia_starbox_simbad_reference(na[0])
 
             if wiki_simbad is not None:
-                for entry, _ in entries.items():
-                    for sb_entry in sb_entries:
-                        sy_matches.add(add_fuzz_distances(entry, sb_entry, wiki_simbad, False, 'wikipedia'))
-                
+                wiki_names = get_match_names(wiki_simbad)
+
+                wiki_idents = systemquery.query_idents(wiki_names)
+
+                for name in wiki_names:
+                    max_dist = 1.0
+
+                    if isinstance(name, MatchIdent):
+                        max_dist = name.maxdist
+                        name = name.ident
+
+                    for entry, _ in entries.items():
+                        for sb_entry in sb_entries:
+                            lident = space_re.sub(' ', sb_ident.lower())
+
+                            dist_indel = Indel.normalized_distance(lname, lident)
+
+                            if dist_indel > max_dist:
+                                continue
+
+                            sy_matches.add(add_fuzz_distances(entry, sb_entry, name, False, 'wikipedia'))
+
+                        for sb_entry in wiki_idents.get(name, set()):
+                            lident = space_re.sub(' ', sb_ident.lower())
+
+                            dist_indel = Indel.normalized_distance(lname, lident)
+
+                            if dist_indel > max_dist:
+                                continue
+
+                            sy_matches.add(add_fuzz_distances(entry, sb_entry, name, False, 'wikipedia'))
+
                 is_match, sy_matches = filter_matches(sy_matches)
 
         if not is_match:
@@ -2141,7 +2188,7 @@ def match_simbad_coords(matches: Collection[SimbadMatch], systemquery: SystemQue
 
     result_table = systemquery.query_coords(matches)
 
-    return process_matches(result_table, idents)
+    return process_matches(result_table, idents, systemquery)
 
 
 def match_simbad_coords_chunked(matches: Collection[SimbadMatch], systemquery: SystemQueryBase) -> set[SimbadMatch]:
