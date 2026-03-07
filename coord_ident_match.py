@@ -344,7 +344,7 @@ class SystemQueryBase:
     @abstractmethod
     def query_idents(self, names: set[str]) -> dict[str, set[SimbadEntry]]:
         pass
-    
+
     @abstractmethod
     def query_coords(self, matches: Collection[SimbadMatch]) -> Iterable[SimbadTableMatch|Iterable]:
         pass
@@ -378,7 +378,7 @@ class SystemQueryDatabase(SystemQueryBase):
     @abstractmethod
     def insert_basic(self, basics: Iterable[SimbadBasic|Iterable]):
         pass
-    
+
     @abstractmethod
     def insert_idents(self, idents: Iterable[SimbadIdent|Iterable]):
         pass
@@ -394,9 +394,13 @@ class SystemQueryDatabase(SystemQueryBase):
     @abstractmethod
     def query_all_matches(self) -> Iterable[SimbadTableMatch|Iterable]:
         pass
-    
+
     @abstractmethod
     def insert_matches(self, matches: Iterable[SimbadDBMatch|Iterable]):
+        pass
+
+    @abstractmethod
+    def get_processed_matches(self) -> Iterable[SimbadDBMatch]:
         pass
 
 
@@ -405,7 +409,7 @@ class SystemQuerySimbad(SystemQueryBase):
 
     def __init__(self, simbad: Simbad):
         self.simbad = simbad
-    
+
     def query_idents(self, names: set[str]) -> dict[str, set[SimbadEntry]]:
         names = Table(
             data=[names],
@@ -460,7 +464,7 @@ class SystemQuerySimbad(SystemQueryBase):
                 match.sys_dist << u.lightyear,
                 max(max_dist_deg, (max_dist_ly * u.radian / (match.sys_dist << u.lightyear)) << u.deg)
             ))
-        
+
         coords = QTable(
             rows=coords,
             names=('sys_name', 'sys_addr', 'frame', 'sys_ra', 'sys_dec', 'sys_dist', 'search_radius'),
@@ -529,7 +533,7 @@ class SystemQueryMariaDB(SystemQueryDatabase):
 
             for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in cursor:
                 name = space_re.sub(' ', utils.default_process(sb_ident.strip().lower()))
-                
+
                 entry = SimbadEntry(
                     int(sb_oid),
                     str(sb_main_id),
@@ -571,7 +575,7 @@ class SystemQueryMariaDB(SystemQueryDatabase):
 
             for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in rows:
                 name = space_re.sub(' ', utils.default_process(sb_ident.strip().lower()))
-                
+
                 entry = SimbadEntry(
                     int(sb_oid),
                     str(sb_main_id),
@@ -646,7 +650,7 @@ class SystemQueryMariaDB(SystemQueryDatabase):
 
                 sys.stderr.write('.')
                 sys.stderr.flush()
-            
+
             sys.stderr.write(f' {len(entries)}\n')
 
             return entries
@@ -1141,13 +1145,53 @@ class SystemQueryMariaDB(SystemQueryDatabase):
             if (i % 64) == 0:
                 sys.stderr.write(f' {i} [{n}]\n')
 
+    def get_processed_matches(self) -> Iterable[SimbadDBMatch]:
+        with self.connect() as conn:
+            cursor = conn.cursor(MySQLdb.cursors.SSCursor)
+            cursor.execute(
+                '''
+                    SELECT
+                        sys_name,
+                        sys_addr,
+                        frame,
+                        sys_ra,
+                        sys_dec,
+                        sys_dist,
+                        simbad_oid,
+                        simbad_main_id,
+                        simbad_ident,
+                        simbad_ra,
+                        simbad_dec,
+                        simbad_plx,
+                        matched_name,
+                        match_source,
+                        dist_plx,
+                        dist_ly,
+                        dist_deg,
+                        dist_jw,
+                        dist_jw_punct,
+                        dist_indel,
+                        dist_indel_punct,
+                        dist_hamming,
+                        dist_hamming_punct,
+                        dist_lev,
+                        dist_lev_punct,
+                        dist_dlev,
+                        dist_dlev_punct
+                    FROM sys_coord_matches_ident
+                '''
+            )
+
+            for row in cursor:
+                yield SimbadDBMatch(*row)
+
 
 class SystemQuerySqlite3(SystemQueryDatabase):
     conn: sqlite3.Connection
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
-    
+
     def query_idents(self, names: set[str]) -> dict[str, set[SimbadEntry]]:
         cursor = self.conn.cursor()
 
@@ -1173,7 +1217,7 @@ class SystemQuerySqlite3(SystemQueryDatabase):
 
         for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in cursor:
             name = space_re.sub(' ', utils.default_process(sb_ident.strip().lower()))
-            
+
             entry = SimbadEntry(
                 sb_oid,
                 sb_main_id,
@@ -1218,7 +1262,7 @@ class SystemQuerySqlite3(SystemQueryDatabase):
         for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in cursor:
             if not bracketed_post2014_re.match(sb_ident):
                 name = space_re.sub(' ', utils.default_process(sb_ident.strip().lower()))
-                
+
                 entry = SimbadEntry(
                     sb_oid,
                     sb_main_id,
@@ -1253,7 +1297,7 @@ class SystemQuerySqlite3(SystemQueryDatabase):
             sys_ra = float(match.sys_ra / u.deg)
             sys_dec = float(match.sys_dec / u.deg)
             sys_dist = float(match.sys_dist / u.lightyear)
-            
+
             sys_coords.append({
                 'sys_name': match.sys_name,
                 'sys_addr': match.sys_addr,
@@ -1720,6 +1764,45 @@ class SystemQuerySqlite3(SystemQueryDatabase):
             if (i % 64) == 0:
                 sys.stderr.write(f' {i} [{n}]\n')
 
+    def get_processed_matches(self) -> Iterable[SimbadDBMatch]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            '''
+                SELECT
+                    sys_name,
+                    sys_addr,
+                    frame,
+                    sys_ra,
+                    sys_dec,
+                    sys_dist,
+                    simbad_oid,
+                    simbad_main_id,
+                    simbad_ident,
+                    simbad_ra,
+                    simbad_dec,
+                    simbad_plx,
+                    matched_name,
+                    match_source,
+                    dist_plx,
+                    dist_ly,
+                    dist_deg,
+                    dist_jw,
+                    dist_jw_punct,
+                    dist_indel,
+                    dist_indel_punct,
+                    dist_hamming,
+                    dist_hamming_punct,
+                    dist_lev,
+                    dist_lev_punct,
+                    dist_dlev,
+                    dist_dlev_punct
+                FROM sys_coord_matches_ident
+            '''
+        )
+
+        for row in cursor:
+            yield SimbadDBMatch(*row)
+
 
 def get_ed_known_systems(name_or_id: str|int) -> Generator[str]:
     global known_systems
@@ -1904,7 +1987,7 @@ def get_match_names(name: str) -> set[str|MatchIdent]:
         if match := pattern.match(name):
             for mangle in mangles:
                 mangled = mangle(match)
-                
+
                 if isinstance(mangled, CatQuery):
                     mnames = list(query_cat(mangled))
                 elif isinstance(mangled, MatchIdent):
@@ -1977,7 +2060,7 @@ def get_wikipedia_starbox_simbad_reference(name: str) -> str|None:
                 if wiki_page.exists():
                     if wiki_page.isRedirectPage():
                         wiki_page = wiki_page.getRedirectTarget()
-                    
+
                     for t, p in wiki_page.templatesWithParams():
                         if t.title() == 'Template:Starbox reference':
                             for r in p:
@@ -1986,7 +2069,7 @@ def get_wikipedia_starbox_simbad_reference(name: str) -> str|None:
                                     simbad = (name, urllib.parse.unquote(v.replace('+',' ')))
             except Exception:
                 pass
-            
+
             cursor = conn.cursor()
             cursor.execute('INSERT INTO wiki_simbad (name, simbad) VALUES (?, ?)', simbad)
             conn.commit()
@@ -2307,7 +2390,7 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
                 for entry, _ in entries.item():
                     for sb_entry in sb_entries:
                         lident = space_re.sub(' ', sb_entry.ident.lower())
-                        wiki_matches = []
+                        wiki_matches = {}
 
                         for name, item_id, alias in wiki_names:
                             max_dist = 1.0
@@ -2318,13 +2401,17 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
                                 name = name.ident
 
                             if dist_indel <= max_dist:
-                                wiki_matches.append((dist_indel, name, item_id, alias))
+                                wiki_matches.setdefault((alias, item_id), []).append((dist_indel, name))
 
-                        wiki_matches.sort()
+                        for (alias, item_id), wm in wiki_matches.items():
+                            wm.sort()
+                            dist_indel, name = wm[0]
 
-                        if len(wiki_matches) > 0:
-                            name, item_id, alias = wiki_matches[0]
-                            sy_matches.add(add_fuzz_distances(entry, sb_entry, name, False, f'wikidata({item_id}/alias={alias})'))
+                            if dist_indel == 0:
+                                sb_sub = dataclasses.replace(sb_entry, ident=f'NAME {alias}')
+                                sy_matches.add(add_fuzz_distances(entry, sb_sub, f'NAME {na[0]}', False, f'wikidata({item_id}/alias={alias})'))
+                            else:
+                                sy_matches.add(add_fuzz_distances(entry, sb_entry, name, False, f'wikidata({item_id}/alias={alias})'))
 
                 is_match, sy_matches = filter_matches(sy_matches)
 
@@ -2375,7 +2462,7 @@ def match_simbad_coords_chunked(matches: Collection[SimbadMatch], systemquery: S
     for grp in itertools.batched(matches, 1000):
         for result in match_simbad_coords(grp, systemquery):
             results.add(result)
-    
+
     return results
 
 
@@ -2495,7 +2582,7 @@ def save_matches_db(matches: set[SimbadMatch], systemquery: SystemQueryDatabase,
 
         #     if bmatch is None or totdist < min(bmatch.dist_indel, bmatch.dist_jw) + min(bmatch.dist_ly, bmatch.dist_deg) + min(0.05, bmatch.dist_plx):
         #         sysmatches['best_match'] = match
-                        
+
         # name_matches.add(match)
 
     print(f'{len(matchlist)} rows in matches table')
@@ -2512,6 +2599,9 @@ def process_matches_db(systemquery: SystemQueryDatabase):
 
     rows = []
     sysaddrs = set()
+
+    for row in systemquery.get_processed_matches():
+        sysaddrs.add(row.sys_addr)
 
     matchcount = 0
 
@@ -2742,7 +2832,7 @@ def fetch_spansh_systems(systemquery: SystemQueryDatabase):
 
                 if line[0] != '{' or line[-1] != '}':
                     continue
-                
+
                 jline = json.loads(line)
 
                 sys_name = str(jline['name'])
