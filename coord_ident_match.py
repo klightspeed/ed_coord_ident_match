@@ -1961,6 +1961,7 @@ def add_fuzz_distances(match: SimbadMatch, simbad: SimbadEntry, name: str, is_al
 def get_wikipedia_starbox_simbad_reference(name: str) -> str|None:
     wiki_site = pywikibot.Site('en', 'wikipedia')
     wiki_page = pywikibot.Page(wiki_site, name)
+
     with sqlite3.connect('wikipedia.sqlite') as conn:
         cursor = conn.cursor()
         cursor.execute('CREATE TABLE IF NOT EXISTS wiki_simbad (name TEXT NOT NULL UNIQUE, simbad TEXT NULL) STRICT')
@@ -1991,6 +1992,183 @@ def get_wikipedia_starbox_simbad_reference(name: str) -> str|None:
             conn.commit()
 
         return simbad[1]
+
+
+def get_wikidata_hd_stars(site: pywikibot.Site) -> Generator[pywikibot.ItemPage]:
+    query = '''
+    SELECT ?item WHERE {
+        ?item p:P528 ?statement .
+        ?statement pq:P972 wd:Q111130 .
+    }
+    '''
+
+    return pywikibot.pagegenerators.WikidataSPARQLPageGenerator(query, site=site)
+
+
+def add_wikidata_item(item_id: str, site: pywikibot.Site, conn: sqlite3.Connection):
+    item = pywikibot.ItemPage(wikidata_site, item_id)
+    item_data = item.get()
+    item_aliases = set()
+    item_simbad = set()
+
+    for lang, name in item_data.get('labels', {}).items():
+        item_aliases.add((item_id, name))
+
+    for lang, aliases in item_data.get('aliases', {}).items():
+        for alias in aliases:
+            match_name = space_re.sub(' ', utils.default_process(alias.strip().lower()))
+            item_aliases.add((item_id, alias))
+
+    item_claims = item_data.get('claims', {})
+
+    for claim in item_claims.get('P3083', []):
+        item_simbad.add(claim.getTarget())
+
+    for claim in item_claims.get('P528', []):
+        for source_ref in claim.getSources():
+            for source_claim in source_ref.get('P248', []):
+                source_claim_tgt = source_claim.getTarget()
+                if isinstance(source_claim_tgt, pywikibot.ItemPage) and source_claim_tgt.title() == 'Q654724':
+                    item_simbad.add(claim.getTarget())
+
+    cursor = conn.cursor()
+    cursor.executemany('INSERT INTO wikidata_aliases (item_id, alias, match_name) VALUES (?, ?, ?)', item_aliases)
+
+    cursor = conn.cursor()
+    cursor.executemany('INSERT INTO wikidata_simbad (item_id, ident) VALUES (?, ?, ?)', item_simbad)
+
+    conn.commit()
+
+
+def get_wikidata_star_aliases() -> dict[str, set[tuple[str, str]]]:
+    wikidata_site = pywikibot.Site("wikidata", "wikidata")
+
+    with sqlite3.connect('wikidata.sqlite') as conn:
+        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_idents (item_id TEXT NOT NULL, source TEXT NOT NULL) STRICT')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_idents_item_id ON wikidata_idents (item_id)')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_idents_source ON wikidata_idents (source)')
+
+        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_aliases (item_id TEXT NOT NULL, alias TEXT NOT NULL, match_name TEXT NOT NULL) STRICT')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_aliases_item_id ON wikidata_aliases (item_id)')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_aliases_alias ON wikidata_aliases (alias)')
+
+        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_simbad (item_id TEXT NOT NULL, ident TEXT NOT NULL) STRICT')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_simbad_item_id ON wikidata_simbad (item_id)')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_simbad_ident ON wikidata_simbad (ident)')
+
+        cursor = conn.cursor()
+        cursor.execute('SELECT DISTINCT source FROM wikidata_idents')
+        fetched_sources = set((src for src, in cursor))
+
+        cursor = conn.cursor()
+        cursor.execute('SELECT DISTINCT item_id FROM wikidata_idents')
+        wikidata_items = set((item_id for item_id, in cursor))
+
+        cursor = conn.cursor()
+        cursor.execute('SELECT DISTINCT item_id FROM wikidata_aliases')
+        fetched_items = set((item_id for item_id, in cursor))
+
+        sources = {
+            'HD': get_wikidata_hd_stars
+        }
+
+        for src, fetch in sources.items():
+            if src not in fetched_sources:
+                add_idents = []
+
+                for item in fetch(wikidata_site):
+                    item_id = item.title()
+                    add_idents.append(('HD', item_id))
+                    wikidata_items.add(item_id)
+
+                cursor = conn.cursor()
+                cursor.executemany('INSERT INTO wikidata_idents (source, item_id) VALUES (?, ?)', add_idents)
+                conn.commit()
+
+        for item_id in wikidata_items:
+            if item_id not in fetched_items:
+                add_wikidata_item(item_id, wikidata_site, conn)
+
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+                SELECT a.match_name, s.ident
+                FROM wikidata_aliases a
+                JOIN wikidata_simbad s ON s.item_id = a.item_id
+            '''
+        )
+
+        name_map = {}
+
+        for row in cursor:
+            name_map.setdefault(row[0], set()).add(row[1])
+
+        return name_map
+
+
+def search_wikidata_entities(name: str) -> set[tuple[str, str, str]]:
+    wikidata_site = pywikibot.Site("wikidata", "wikidata")
+
+    with sqlite3.connect('wikidata.sqlite') as conn:
+        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_idents (item_id TEXT NOT NULL, source TEXT NOT NULL) STRICT')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_idents_item_id ON wikidata_idents (item_id)')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_idents_source ON wikidata_idents (source)')
+
+        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_aliases (item_id TEXT NOT NULL, alias TEXT NOT NULL, match_name TEXT NOT NULL) STRICT')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_aliases_item_id ON wikidata_aliases (item_id)')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_aliases_alias ON wikidata_aliases (alias)')
+
+        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_simbad (item_id TEXT NOT NULL, ident TEXT NOT NULL) STRICT')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_simbad_item_id ON wikidata_simbad (item_id)')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_simbad_ident ON wikidata_simbad (ident)')
+
+        cursor = conn.cursor()
+        cursor.execute('SELECT item_id FROM wikidata_idents WHERE source = ?', (f'search:{name}',))
+        item_ids = set((item_id for item_id, in cursor))
+
+        if len(item_ids) == 0:
+            add_idents = set()
+
+            for result in wikidata_site.search_entities(name, 'mul'):
+                item_id = result['id']
+                add_idents.add((f'search:{name}', item_id))
+                item_ids.add(item_id)
+
+            cursor = conn.cursor()
+            cursor.executemany('INSERT INTO wikidata_idents (source, item_id) VALUES (?, ?)', add_idents)
+            conn.commit()
+
+        cursor = conn.cursor()
+        cursor.executemany(
+            '''
+                SELECT DISTINCT item_id
+                FROM wikidata_aliases
+                WHERE item_id IN (
+                    SELECT value
+                    FROM JSON_EACH(?)
+                )')
+            ''',
+            (json.dumps(list(item_ids)), )
+        )
+
+        fetched_items = set((v for v, in cursor))
+
+        for item_id in item_ids:
+            if item_id not in fetched_items:
+                add_wikidata_item(item_id, wikidata_site, conn)
+
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+                SELECT DISTINCT s.ident, s.item_id, a.alias
+                FROM wikidata_aliases a
+                JOIN wikidata_simbad s ON s.item_id = a.item_id
+                WHERE match_name = ?
+            ''',
+            (space_re.sub(' ', utils.default_process(alias.strip().lower())), )
+        )
+
+        return set(((ident, item_id, alias) for ident, item_id, alias in cursor))
 
 
 def filter_matches(sy_matches: set[SimbadMatch]) -> tuple[bool, set[SimbadMatch]]:
@@ -2112,41 +2290,41 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
         is_match, sy_matches = filter_matches(sy_matches)
 
         if not is_match and not any(min(m.dist_indel, m.dist_jw) < 0.1 and not m.is_alt_name for m in sy_matches):
-            sys.stderr.write(f'Querying Wikipedia for {na[0]}\n')
-            wiki_simbad = get_wikipedia_starbox_simbad_reference(na[0])
+            sys.stderr.write(f'Querying Wikidata for {na[0]}\n')
+            wiki_names = set()
 
-            if wiki_simbad is not None:
-                wiki_names = get_match_names(wiki_simbad)
+            for wiki_simbad, wiki_item_id in search_wikidata_entities(na[0]):
+                for name in get_match_names(wiki_simbad):
+                    wiki_names.add((name, wiki_item_id))
 
-                wiki_idents = systemquery.query_idents(wiki_names)
+            if len(wiki_names) > 0:
+                wiki_idents = systemquery.query_idents(set((n for n, i in wiki_names)))
 
-                for name in wiki_names:
-                    max_dist = 1.0
+                for _, ident_entries in wiki_itents.items():
+                    for sb_entry in ident_entries:
+                        sb_entries.add(sb_entry)
 
-                    if isinstance(name, MatchIdent):
-                        max_dist = name.maxdist
-                        name = name.ident
+                for entry, _ in entries.item():
+                    for sb_entry in sb_entries:
+                        lident = space_re.sub(' ', sb_entry.ident.lower())
+                        wiki_matches = []
 
-                    for entry, _ in entries.items():
-                        for sb_entry in sb_entries:
-                            lident = space_re.sub(' ', sb_ident.lower())
+                        for name, item_id, alias in wiki_names:
+                            max_dist = 1.0
+                            lname = space_re.sub(' ', name.lower())
 
-                            dist_indel = Indel.normalized_distance(lname, lident)
+                            if isinstance(name, MatchIdent):
+                                max_dist = name.maxdist
+                                name = name.ident
 
-                            if dist_indel > max_dist:
-                                continue
+                            if dist_indel <= max_dist:
+                                wiki_matches.append((dist_indel, name, item_id, alias))
 
-                            sy_matches.add(add_fuzz_distances(entry, sb_entry, name, False, 'wikipedia'))
+                        wiki_matches.sort()
 
-                        for sb_entry in wiki_idents.get(name, set()):
-                            lident = space_re.sub(' ', sb_ident.lower())
-
-                            dist_indel = Indel.normalized_distance(lname, lident)
-
-                            if dist_indel > max_dist:
-                                continue
-
-                            sy_matches.add(add_fuzz_distances(entry, sb_entry, name, False, 'wikipedia'))
+                        if len(wiki_matches) > 0:
+                            name, item_id, alias = wiki_matches[0]
+                            sy_matches.add(add_fuzz_distances(entry, sb_entry, name, False, f'wikidata({item_id}/alias={alias})'))
 
                 is_match, sy_matches = filter_matches(sy_matches)
 
