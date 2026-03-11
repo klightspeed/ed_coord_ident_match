@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 from collections.abc import Generator, Collection, Iterable, Sequence, Callable
 from abc import abstractmethod
-from typing import NamedTuple
+from typing import NamedTuple, TypedDict, Required
 from frozendict import frozendict
 from time import sleep
 import dataclasses
@@ -34,7 +34,10 @@ import urllib.parse
 import random
 import os
 import sys
+import unicodedata
+import shutil
 import pywikibot
+import pywikibot.pagegenerators
 from datetime import date, timedelta
 
 
@@ -42,11 +45,17 @@ astroquery.__citation__
 astropy.__citation__
 
 
+renamed_systems_sheeturi = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vS2Q8f9tWZIJz5S1z6Fv1pfNgFxywIfyZVJGkGFvQ4TZ9Si8UZ8GkGnuiMo8SZgB27tTchO3rCqA0fx/pub?output=tsv'
+
 max_dist_ly = 0.1 * u.lightyear
 max_dist_deg = (6 * u.arcmin) << u.deg
 
-space_re = re.compile('  +|-')
+space_dash_re = re.compile('  +|-')
+space_re = re.compile('  +')
 num_re = re.compile('[0-9+-]')
+ident_re = re.compile(r'^[0-9A-Za-z\[\]_#* +-]+$')
+pgsysre = re.compile('^([A-Za-z0-9.()\' -]+?) ([A-Z][A-Z]-[A-Z]) ([a-h])(?:([0-9]+)-|)([0-9]+)$', re.IGNORECASE)
+
 
 greek_letters = {
     'alpha': 'alf',
@@ -187,6 +196,7 @@ r_num = '(?P<num>[1-9][0-9]*)'
 
 viz_cat_cache: dict[str, list[Table]] = {}
 known_systems = None
+renamed_systems = None
 
 
 def calc_search_radius_ra_range(sys_dist: float|u.Quantity[u.lightyear], sys_dec: float|u.Quantity[u.deg]) -> tuple[float, float]:
@@ -201,6 +211,13 @@ def calc_search_radius_ra_range(sys_dist: float|u.Quantity[u.lightyear], sys_dec
         search_ra_range = search_radius / math.cos(math.radians(abs(sys_dec) + search_radius))
 
     return (search_radius, search_ra_range)
+
+
+def filter_match_name(name: str) -> str:
+    normalized = unicodedata.normalize('NFKD', name)
+    normalized = ''.join(c for c in normalized if unicodedata.category(c) not in ['Mn', 'Mc'])
+    return space_dash_re.sub(' ', utils.default_process(normalized.strip().lower()))
+
 
 @dataclass(frozen=True)
 class CatQuery:
@@ -446,8 +463,8 @@ class SystemQuerySimbad(SystemQueryBase):
                 sb_plx << u.mas if sb_plx is not None else None
             )
 
-            idents.setdefault(space_re.sub(' ', utils.default_process(name.strip().lower())), set()).add(entry)
-            idents.setdefault(space_re.sub(' ', utils.default_process(sb_ident.strip().lower())), set()).add(entry)
+            idents.setdefault(filter_match_name(name), set()).add(entry)
+            idents.setdefault(filter_match_name(sb_ident), set()).add(entry)
 
         return idents
 
@@ -526,13 +543,13 @@ class SystemQueryMariaDB(SystemQueryDatabase):
                     WHERE basic.ra IS NOT NULL
                     AND basic.`dec` IS NOT NULL
                 ''',
-                (json.dumps([{'name': space_re.sub(' ', utils.default_process(n.strip().lower()))} for n in names]),)
+                (json.dumps([{'name': filter_match_name(n)} for n in names]),)
             )
 
             idents = {}
 
             for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in cursor:
-                name = space_re.sub(' ', utils.default_process(sb_ident.strip().lower()))
+                name = filter_match_name(sb_ident)
 
                 entry = SimbadEntry(
                     int(sb_oid),
@@ -574,7 +591,7 @@ class SystemQueryMariaDB(SystemQueryDatabase):
             idents = {}
 
             for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in rows:
-                name = space_re.sub(' ', utils.default_process(sb_ident.strip().lower()))
+                name = filter_match_name(sb_ident)
 
                 entry = SimbadEntry(
                     int(sb_oid),
@@ -1117,7 +1134,7 @@ class SystemQueryMariaDB(SystemQueryDatabase):
                 sys.stderr.write(f' {i} [{n}]\n')
                 break
 
-            rows = [{'id': name, 'match_name': space_re.sub(' ', utils.default_process(name.strip().lower()))} for name, in rows]
+            rows = [{'id': name, 'match_name': filter_match_name(name)} for name, in rows]
 
             cursor = self.conn.cursor()
             cursor.execute(
@@ -1210,13 +1227,13 @@ class SystemQuerySqlite3(SystemQueryDatabase):
                 WHERE basic.ra IS NOT NULL
                   AND basic.dec IS NOT NULL
             ''',
-            (json.dumps([{'name': space_re.sub(' ', utils.default_process(n.strip().lower()))} for n in names]),)
+            (json.dumps([{'name': filter_match_name(n)} for n in names]),)
         )
 
         idents = {}
 
         for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in cursor:
-            name = space_re.sub(' ', utils.default_process(sb_ident.strip().lower()))
+            name = filter_match_name(sb_ident)
 
             entry = SimbadEntry(
                 sb_oid,
@@ -1261,7 +1278,7 @@ class SystemQuerySqlite3(SystemQueryDatabase):
 
         for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in cursor:
             if not bracketed_post2014_re.match(sb_ident):
-                name = space_re.sub(' ', utils.default_process(sb_ident.strip().lower()))
+                name = filter_match_name(sb_ident)
 
                 entry = SimbadEntry(
                     sb_oid,
@@ -1739,7 +1756,7 @@ class SystemQuerySqlite3(SystemQueryDatabase):
                 sys.stderr.write(f' {i} [{n}]\n')
                 break
 
-            rows = [{'id': name, 'match_name': space_re.sub(' ', utils.default_process(name.strip().lower()))} for name, in rows]
+            rows = [{'id': name, 'match_name': filter_match_name(name)} for name, in rows]
 
             cursor = self.conn.cursor()
             cursor.execute(
@@ -1804,6 +1821,603 @@ class SystemQuerySqlite3(SystemQueryDatabase):
             yield SimbadDBMatch(*row)
 
 
+class WikiDataAliasInfo(TypedDict, total=False):
+    name: Required[str]
+    simbad: bool
+    cats: list[str]
+    langs: list[str]
+
+
+class WikiDataCoords(TypedDict, total=False):
+    ra: str
+    dec: str
+
+
+class WikiDataEntry(TypedDict):
+    id: str
+    labels: dict[str, str]
+    langaliases: dict[str, list[str]]
+    types: list[str]
+    aliases: list[WikiDataAliasInfo]
+    idents: list[WikiDataAliasInfo]
+    simbad_idents: list[str]
+    coords: dict[str, WikiDataCoords]
+
+
+class WikiDataIdent(NamedTuple):
+    ident: str
+    item_id: str
+    alias: str
+
+
+class WikiData:
+    p_simbad_id = 'P3083'
+    p_catcode = 'P528'
+    p_catalog = 'P972'
+    p_instance_of = 'P31'
+    p_subclass_of = 'P279'
+    p_stated_in = 'P248'
+    p_ra = 'P6257'
+    p_dec = 'P6258'
+    p_epoch = 'P6259'
+    q_simbad = 'Q654724'
+    site = pywikibot.Site("wikidata", "wikidata")
+
+    @staticmethod
+    def create_tables(conn: sqlite3.Connection):
+        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_idents (source TEXT NOT NULL, item_id TEXT NULL) STRICT')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_idents_item_id ON wikidata_idents (item_id)')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_idents_source ON wikidata_idents (source)')
+
+        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_aliases (item_id TEXT NOT NULL, alias TEXT NOT NULL, aliasinfo TEXT NOT NULL, match_name TEXT NOT NULL) STRICT')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_aliases_item_id ON wikidata_aliases (item_id)')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_aliases_alias ON wikidata_aliases (alias)')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_aliases_match_name ON wikidata_aliases (match_name)')
+        conn.cursor().execute('CREATE UNIQUE INDEX IF NOT EXISTS IX_wikidata_aliases_item_id_alias ON wikidata_aliases (item_id, alias)')
+
+        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_simbad (item_id TEXT NOT NULL, ident TEXT NOT NULL, identinfo TEXT NOT NULL) STRICT')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_simbad_item_id ON wikidata_simbad (item_id)')
+        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_simbad_ident ON wikidata_simbad (ident)')
+        conn.cursor().execute('CREATE UNIQUE INDEX IF NOT EXISTS IX_wikidata_simbad_item_id_ident ON wikidata_simbad (item_id, ident)')
+
+    @staticmethod
+    def get_snak_entity_id(snak: dict) -> str|None:
+        if snak.get('datatype') != 'wikibase-item':
+            return None
+
+        datavalue = snak.get('datavalue', {})
+
+        if datavalue.get('type') != 'wikibase-entityid':
+            return None
+
+        value = datavalue.get('value')
+
+        if value.get('entity-type') != 'item':
+            return None
+
+        return value.get('id', f'Q{value.get('numeric-id')}')
+
+    @staticmethod
+    def get_snak_value_string(snak: dict) -> str|None:
+        if snak.get('datatype') != 'string':
+            return None
+        
+        return snak.get('datavalue', {}).get('value')
+
+    @staticmethod
+    def get_snak_value_extid(snak: dict) -> str|None:
+        if snak.get('datatype') not in ('string', 'external-id'):
+            return None
+        
+        return snak.get('datavalue', {}).get('value')
+
+    @staticmethod
+    def get_snak_value_degrees(snak: dict) -> str|None:
+        if snak.get('datatype') != 'quantity':
+            return None
+        
+        dataval = snak.get('datavalue', {})
+
+        if dataval.get('type') != 'quantity':
+            return None
+        
+        value = dataval.get('value', {})
+
+        if value.get('unit') != 'http://www.wikidata.org/entity/Q28390':
+            return None
+        
+        return value.get('amount')
+
+    @staticmethod
+    def get_claim_entity_id(claim: dict) -> str|None:
+        return get_snak_entity_id(claim.get('mainsnak', {}))
+
+    @staticmethod
+    def get_claim_value_string(claim: dict) -> str|None:
+        return get_snak_value_string(claim.get('mainsnak', {}))
+
+    @staticmethod
+    def get_claim_value_extid(claim: dict) -> str|None:
+        return get_snak_value_extid(claim.get('mainsnak', {}))
+
+    @staticmethod
+    def get_claim_value_degrees(claim: dict) -> str|None:
+        return get_snak_value_degrees(claim.get('mainsnak', {}))
+
+    @staticmethod
+    def get_claim_stated_in(claim: dict) -> list[str]:
+        stated_in = []
+
+        for reference in claim.get('references', []):
+            for stated_in_snak in reference.get('snaks', {}).get(p_stated_in, []):
+                stated_in_id = get_snak_entity_id(stated_in_snak)
+
+                if stated_in_id is not None:
+                    stated_in.append(stated_in_id)
+        
+        return stated_in
+
+    @staticmethod
+    def process_wikidata_entity(entity: dict) -> WikiDataEntry|None:
+        wiki_id = j.get('id')
+        wiki_labels = j.get('labels', {})
+        wiki_aliases = j.get('aliases', {})
+        wiki_claims = j.get('claims', {})
+
+        if isinstance(wiki_id, str) and isinstance(wiki_labels, dict) and isinstance(wiki_aliases, dict) and isinstance(wiki_claims, dict):
+            aliases = {}
+            idents = {}
+            entdata: WikiDataEntry = {
+                'id': wiki_id,
+                'labels': {k: v['value'] for k, v in wiki_labels.items()},
+                'langaliases': {k: [vv['value'] for vv in v] for k, v in wiki_aliases.items()},
+                'types': [],
+                'idents': [],
+                'aliases': [],
+                'simbad_idents': [],
+                'coords': {}
+            }
+
+            for lang, label in wiki_labels.items():
+                label = label.get('value')
+                if label is not None:
+                    aliases.setdefault(label, {}).setdefault('langs', []).append(lang)
+            
+            for lang, alias_items in wiki_aliases.items():
+                for label in alias_items:
+                    label = label.get('value')
+                    if label is not None:
+                        aliases.setdefault(label, {}).setdefault('langs', []).append(lang)
+
+            is_astronomical_object = False
+            is_in_astronomical_cat = False
+            has_simbad_id = False
+            has_coords = False
+
+            if p_ra in wiki_claims and p_dec in wiki_claims:
+                has_coords = True
+
+            for claim_ra in wiki_claims.get(p_ra, []):
+                if isinstance(claim_ra, pywikibot.Claim):
+                    claim_ra = claim_ra.toJSON()
+
+                ra = get_claim_value_degrees(claim_ra)
+
+                if ra is None:
+                    continue
+
+                for reference in get_claim_stated_in(claim_ra):
+                    entdata['coords'].setdefault(reference, {})['ra'] = ra
+
+            for claim_dec in wiki_claims.get(p_dec, []):
+                if isinstance(claim_dec, pywikibot.Claim):
+                    claim_dec = claim_dec.toJSON()
+
+                dec = get_claim_value_degrees(claim_dec)
+
+                if dec is None:
+                    continue
+
+                for reference in get_claim_stated_in(claim_dec):
+                    entdata['coords'].setdefault(reference, {})['dec'] = dec
+
+            for claim_simbad in wiki_claims.get(p_simbad_id, []):
+                if isinstance(claim_simbad, pywikibot.Claim):
+                    claim_simbad = claim_simbad.toJSON()
+
+                catcode = get_claim_value_extid(claim_simbad)
+
+                if catcode is None:
+                    continue
+
+                aliases.setdefault(label, {})['simbad'] = True
+                idents.setdefault(catcode, {})['simbad'] = True
+                has_simbad_id = True
+                entdata['simbad_idents'].append(catcode)
+
+            for claim_instance_of in wiki_claims.get(p_instance_of, []):
+                if isinstance(claim_instance_of, pywikibot.Claim):
+                    claim_instance_of = claim_instance_of.toJSON()
+
+                instance_of_id = get_claim_entity_id(claim_instance_of)
+
+                if instance_of_id in astrotypes:
+                    is_astronomical_object = True
+                    entdata['types'].append(instance_of_id)
+
+            for claim_catcode in wiki_claims.get(p_catcode, []):
+                if isinstance(claim_catcode, pywikibot.Claim):
+                    claim_catcode = claim_catcode.toJSON()
+
+                catcode = get_claim_value_string(claim_catcode)
+
+                if catcode is None:
+                    continue
+
+                aliases.setdefault(catcode, {})
+
+                for catalog in claim_catcode.get('qualifiers', {}).get(p_catalog, []):
+                    catalog_id = get_snak_entity_id(catalog)
+
+                    if catalog_id in astrocats:
+                        is_in_astronomical_cat = True
+                        aliases.setdefault(catcode, {}).setdefault('cats', []).append(catalog_id)
+                        idents.setdefault(catcode, {}).setdefault('cats', []).append(catalog_id)
+
+                if q_simbad in get_claim_stated_in(claim_catcode):
+                    has_simbad_id = True
+                    aliases.setdefault(catcode, {})['simbad'] = True
+                    idents.setdefault(catcode, {})['simbad'] = True
+            
+            if len(idents) > 0:
+                entdata['idents'] = [{'name': name, **info} for name, info in idents.items()]
+                entdata['aliases'] = [{'name': name, **info} for name, info in aliases.items()]
+
+                return entdata
+                
+        return None
+
+    @staticmethod
+    def open_dump(filename: str):
+        if filename.endswith('.json.bz2'):
+            return bz2.open(filename, 'rt', encoding='utf-8')
+        elif filename.endswith('.json.gz'):
+            return gzip.open(filename, 'rt', encoding='utf-8')
+        elif filename.endswith('.json'):
+            return open(filename, 'rt', encoding='utf-8')
+
+    @staticmethod
+    def process_wikidata_dump(filename: str):
+        conn = sqlite3.connect("wikidata-astro.sqlite")
+        create_tables(conn)
+
+        astrotypes = set()
+        astrocats = set()
+
+        sys.stderr.write('Retrieving astronomical object types\n')
+        for item in get_astronomical_object_types(site):
+            astrotypes.add(item.title())
+
+        sys.stderr.write('Retrieving astronomical catalogues\n')
+        for item in get_astronomical_catalogues(site):
+            astrocats.add(item.title())
+
+        sys.stderr.write('Processing wikidata dump\n')
+        entnum = 0
+        n_with_ident = 0
+        n_aliases = 0
+        n_idents = 0
+        save_aliases = []
+        save_idents = []
+
+        with open_dump(filename) as f:
+            for line in f:
+                line = line.strip()
+
+                if len(line) > 2 and line[0] == '{':
+                    if line[-1] == ',':
+                        line = line[:-1]
+
+                    j = json.loads(line)
+
+                    entry = process_wikidata_entity(j)
+
+                    if entry is not None:
+                        wiki_id = entry['id']
+                        n_with_ident += 1
+
+                        for aliasinfo in entry['aliases']:
+                            alias = alias['name']
+                            info = dict(aliasinfo)
+                            del info['name']
+                            normalized = unicodedata.normalize('NFKD', alias)
+                            normalized = ''.join(c for c in normalized if unicodedata.category(c) not in ['Mn', 'Mc'])
+                            match_name = space_dash_re.sub(' ', utils.default_process(normalized.strip().lower()))
+                            save_aliases.append((wiki_id, alias, json.dumps(info), match_name))
+                        
+                        for identinfo in entry['idents']:
+                            ident = identinfo['name']
+                            info = dict(ident)
+                            del info['name']
+                            save_idents.append((wiki_id, ident, json.dumps(info)))
+
+                        n_aliases += len(entry['aliases'])
+                        n_idents += len(entry['idents'])
+
+                    entnum += 1
+
+                    if (entnum % 1000) == 0:
+                        sys.stderr.write('.')
+                        sys.stderr.flush()
+
+                        if (entnum % 64000) == 0:
+                            sys.stderr.write(f' {entnum} [with_ident={n_with_ident}; aliases={n_aliases}; idents={n_idents}]\n')
+
+                            cursor = conn.cursor()
+                            cursor.executemany('INSERT OR REPLACE INTO wikidata_aliases (item_id, alias, aliasinfo, match_name) VALUES (?, ?, ?, ?)', save_aliases)
+
+                            cursor = conn.cursor()
+                            cursor.executemany('INSERT OR REPLACE INTO wikidata_simbad (item_id, ident, identinfo) VALUES (?, ?, ?)', save_idents)
+
+                            conn.commit()
+
+                            save_aliases = []
+                            save_idents = []
+
+        sys.stderr.write(f' {entnum} [with_ident={n_with_ident}; aliases={n_aliases}; idents={n_idents}]\n')
+
+        cursor = conn.cursor()
+        cursor.executemany('INSERT OR REPLACE INTO wikidata_aliases (item_id, alias, aliasinfo, match_name) VALUES (?, ?, ?, ?)', save_aliases)
+
+        cursor = conn.cursor()
+        cursor.executemany('INSERT OR REPLACE INTO wikidata_simbad (item_id, ident, identinfo) VALUES (?, ?, ?)', save_idents)
+
+        conn.commit()
+
+        save_aliases = []
+        save_idents = []
+
+    @staticmethod
+    def add_item(item_id: str, conn: sqlite3.Connection):
+        sys.stderr.write(f'Fetching wikidata item {item_id}\n')
+        item = pywikibot.ItemPage(site, item_id)
+
+        while True:
+            try:
+                item_data = item.get()
+                break
+            except Exception as e:
+                sys.stderr.write(f'Error retrieving item: {e}\n')
+                sleep(delay * random.uniform(0, 15))
+                delay = min(delay * 2, 120)
+                sys.stderr.write('Retrying\n')
+
+        if item_data is None:
+            return
+
+        entry = process_wikidata_entity(item_data)
+
+        if entry is not None:
+            save_aliases = []
+            save_idents = []
+
+            wiki_id = entry['id']
+
+            for aliasinfo in entry['aliases']:
+                alias = alias['name']
+                info = dict(aliasinfo)
+                del info['name']
+                normalized = unicodedata.normalize('NFKD', alias)
+                normalized = ''.join(c for c in normalized if unicodedata.category(c) not in ['Mn', 'Mc'])
+                match_name = space_dash_re.sub(' ', utils.default_process(normalized.strip().lower()))
+                save_aliases.append((wiki_id, alias, json.dumps(info), match_name))
+            
+            for identinfo in entry['idents']:
+                ident = identinfo['name']
+                info = dict(ident)
+                del info['name']
+                save_idents.append((wiki_id, ident, json.dumps(info)))
+
+            cursor = conn.cursor()
+            cursor.executemany('INSERT OR REPLACE INTO wikidata_aliases (item_id, alias, aliasinfo, match_name) VALUES (?, ?, ?, ?)', save_aliases)
+
+            cursor = conn.cursor()
+            cursor.executemany('INSERT OR REPLACE INTO wikidata_simbad (item_id, ident, identinfo) VALUES (?, ?, ?)', save_idents)
+
+            conn.commit()
+
+    @staticmethod
+    def add_items(item_ids: list[str], conn: sqlite3.Connection):
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+                SELECT DISTINCT item_id
+                FROM wikidata_aliases
+                WHERE item_id IN (
+                    SELECT value
+                    FROM JSON_EACH(?)
+                )
+            ''',
+            (json.dumps(list(item_ids)), )
+        )
+
+        fetched_items = set((v for v, in cursor))
+
+        for item_id in item_ids:
+            if item_id is not None and item_id not in fetched_items:
+                add_item(item_id, conn)
+
+    @staticmethod
+    def get_entities_by_ident(name: str, conn: sqlite3.Connection) -> set[WikiDataIdent]:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+                SELECT DISTINCT s.ident, s.item_id, a.alias
+                FROM wikidata_aliases a
+                JOIN wikidata_simbad s ON s.item_id = a.item_id
+                WHERE s.ident = ?
+            ''',
+            (name, )
+        )
+
+        return set((WikiDataident(ident, item_id, alias) for ident, item_id, alias in cursor))
+
+    @staticmethod
+    def get_entities_by_name(name: str, conn: sqlite3.Connection) -> set[WikiDataIdent]:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+                SELECT DISTINCT s.ident, s.item_id, a.alias
+                FROM wikidata_aliases a
+                JOIN wikidata_simbad s ON s.item_id = a.item_id
+                WHERE a.match_name = ?
+            ''',
+            (filter_match_name(name), )
+        )
+
+        return set((WikiDataIdent(ident, item_id, alias) for ident, item_id, alias in cursor))
+
+    @staticmethod
+    def search_entity_ids_by_ident(name: str) -> Generator[pywikibot.ItemPage]:
+        if not ident_re.match(name):
+            return []
+
+        query = f'''
+        SELECT ?item WHERE {{
+            ?item p:P528 ?catname .
+            ?catname (ps:P528) "{space_re.sub(' ', name)}" .
+        }}
+        '''
+
+        return pywikibot.pagegenerators.WikidataSPARQLPageGenerator(query, site=site)
+
+    @staticmethod
+    def search_entities_by_ident(name: str) -> set[WikiDataIdent]:
+        if os.path.exists('wikidata-astro.sqlite'):
+            with sqlite3.connect('wikidata-astro.sqlite') as conn:
+                return get_entities_by_ident(name, conn)
+
+        with sqlite3.connect('wikidata.sqlite') as conn:
+            create_tables(conn)
+
+            cursor = conn.cursor()
+            cursor.execute('SELECT item_id FROM wikidata_idents WHERE source = ?', (f'cat:{name}',))
+            item_ids = set((item_id for item_id, in cursor))
+
+            if len(item_ids) == 0:
+                add_idents = set()
+                entries = get_entities_by_ident(name, conn)
+
+                if len(entries) > 0:
+                    return entries
+            
+                sys.stderr.write(f'Fetching wikidata item ids for name {name}\n')
+                add_idents = []
+
+                delay = 15
+
+                while True:
+                    try:
+                        for item in search_entity_ids_by_ident(name):
+                            item_id = item.title()
+                            add_idents.append((f'cat:{name}', item_id))
+                            item_ids.add(item_id)
+                        break
+                    except Exception as e:
+                        sys.stderr.write(f'Error executing query: {e}\n')
+                        sleep(delay * random.uniform(0, 15))
+                        delay = min(delay * 2, 120)
+                        sys.stderr.write('Retrying\n')
+
+                sys.stderr.write(f'Got {len(item_ids)} items for name {name}\n')
+
+                if len(item_ids) == 0:
+                    item_ids.append(None)
+                    add_idents.append((f'cat:{name}', None))
+
+                cursor = conn.cursor()
+                cursor.executemany('INSERT INTO wikidata_idents (source, item_id) VALUES (?, ?)', add_idents)
+                conn.commit()
+
+            add_items(item_ids, site, conn)
+
+            return get_entities_by_ident(name, conn)
+
+    @staticmethod
+    def search_entities_by_name(name: str) -> set[WikiDataIdent]:
+        if os.path.exists('wikidata-astro.sqlite'):
+            with sqlite3.connect('wikidata-astro.sqlite') as conn:
+                return get_entities_by_name(name, conn)
+
+        wikidata_site = pywikibot.Site("wikidata", "wikidata")
+
+        with sqlite3.connect('wikidata.sqlite') as conn:
+            create_tables(conn)
+
+            cursor = conn.cursor()
+            cursor.execute('SELECT item_id FROM wikidata_idents WHERE source = ?', (f'search:{name}',))
+            item_ids = set((item_id for item_id, in cursor))
+
+            if len(item_ids) == 0:
+                add_idents = set()
+
+                delay = 15
+
+                while True:
+                    try:
+                        for result in site.search_entities(name, 'mul', total=50):
+                            item_id = result['id']
+                            add_idents.add((f'search:{name}', item_id))
+                            item_ids.add(item_id)
+
+                        break
+                    except Exception as e:
+                        sys.stderr.write(f'Error executing search: {e}\n')
+                        sleep(delay * random.uniform(0, 15))
+                        delay = min(delay * 2, 120)
+                        sys.stderr.write('Retrying\n')
+
+                if len(item_ids) == 0:
+                    item_ids.append(None)
+                    add_idents.append((f'cat:{name}', None))
+
+                cursor = conn.cursor()
+                cursor.executemany('INSERT INTO wikidata_idents (source, item_id) VALUES (?, ?)', add_idents)
+                conn.commit()
+
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                    SELECT DISTINCT item_id
+                    FROM wikidata_aliases
+                    WHERE item_id IN (
+                        SELECT value
+                        FROM JSON_EACH(?)
+                    )
+                ''',
+                (json.dumps(list(item_ids)), )
+            )
+
+            fetched_items = set((v for v, in cursor))
+
+            for item_id in item_ids:
+                if item_id not in fetched_items:
+                    add_item(item_id, conn)
+
+            return get_entities_by_name(name, conn)
+
+    @staticmethod
+    def process_prefiltered_dump():
+        if not os.path.exists('wikidata-astro-with-ident.jsonl.gz'):
+            print('Fetching pre-filtered WikiData dump')
+
+            with urllib.request.urlopen('https://edgalaxydata.space/wikidata/2026-03-03/wikidata-astro-with-ident.jsonl.gz') as sgz:
+                with open('systems.json.gz', 'wb') as ogz:
+                    shutil.copyfileobj(sgz, ogz)
+        
+        process_wikidata_dump('wikidata-astro-with-ident.jsonl.gz')
+
+
 def get_ed_known_systems(name_or_id: str|int) -> Generator[str]:
     global known_systems
 
@@ -1851,6 +2465,35 @@ def get_ed_known_systems(name_or_id: str|int) -> Generator[str]:
         if (gliese := system.get('gliese')) is not None:
             if isinstance(gliese, str) and gliese.lower().startswith('gl '):
                 yield f'GJ {gliese[3:]}'
+
+
+def get_ed_renamed_systems(sys_addr: int) -> Generator[str]:
+    global renamed_systems
+
+    if renamed_systems is None:
+        renamed_systems = {}
+
+        if not os.path.exists('renamed_systems.txt'):
+            with urllib.request.urlopen(renamed_systems_sheeturi) as u:
+                with open('renamed_systems.txt.tmp', 'wb') as f:
+                    f.write(u.read())
+
+            os.rename('renamed_systems.txt.tmp', 'renamed_systems.txt')
+
+        with open('renamed_systems.txt', 'rt') as f:
+            for line in f:
+                line = line.strip()
+                parts = line.split('\t')
+
+                if len(parts) == 4 and num_re.match(parts[2]):
+                    renamed_from, renamed_to, m_sys_addr, _ = parts
+                    m_sys_addr = int(m_sys_addr)
+                    renamed_systems.setdefault(m_sys_addr, set()).add(renamed_from)
+                    renamed_systems.setdefault(m_sys_addr, set()).add(renamed_to)
+
+    for name in renamed_systems.get(sys_addr, set()):
+        if not pgsysre.match(name):
+            yield name
 
 
 def get_vizier_cat(catname: str) -> Table:
@@ -1943,7 +2586,7 @@ patterns: list[tuple[re.Pattern, list[Callable[[re.Match], str|CatQuery|MatchIde
     (re.compile('^(AD95|BB2009|BBG2010|BBS2011|BJG2004|BSM2011|CPO2009|DBP2006|DM99|DML87|FHM2008|FMS2006|GFT2002|GHJ2008|GMB2010|GMM2008|GMM2009|GMW2007|GVS98|GZB2006|H97b|HD2002|HFR2007|HGM2009b|HRF2005|IHA2007|IHA2008|JBM2010|JVD2011|KAG2008|KW97|LAL96|MJD95|MKS2009|MMS2011|MSJ2009|MSR2009|OJV2009|OTS2008|OW94|PCB2009|PMD2009|PW2010|RBB2002|S87b|SHB2004|SHD2009|SNM2009|WBG2011|WMW2010|YSD2013) (.*)', re.IGNORECASE),
      [lambda m: f'[{m.group(1)}] {m.group(2)}']),
 
-    (re.compile(r'^(?:Cl )?(NGC|Pismis|Trumpler|IC|Melotte) ([0-9]+) ([0-9]+)', re.IGNORECASE),
+    (re.compile(r'^(?:Cl )?(NGC|Pismis|Trumpler|Blanco|IC|Melotte) ([0-9]+) ([0-9]+)', re.IGNORECASE),
      [lambda m: f'Cl {m.group(1)} {m.group(2):>4} {m.group(3):>5}']),
     (re.compile(r'^(?:Cl[*] )?(NGC|Trumpler|Blanco|Haffner|Melotte|IC|Stock) ([0-9]+) ([A-Z]+) ([0-9A-Z-]+)', re.IGNORECASE),
      [lambda m: f'Cl* {m.group(1)} {m.group(2):>4} {m.group(3):>6} {m.group(4):>7}']),
@@ -2007,10 +2650,10 @@ def add_fuzz_distances(match: SimbadMatch, simbad: SimbadEntry, name: str, is_al
     dist_deg = angular_separation(match.sys_ra, match.sys_dec, simbad.ra, simbad.dec) << u.deg
     dist_ly = float((dist_deg << u.radian) * match.sys_dist / u.lightyear / u.radian)
     dist_deg = float(dist_deg / u.deg)
-    lident = space_re.sub(' ', simbad.ident.strip().lower())
-    xident = space_re.sub(' ', utils.default_process(simbad.ident.strip().lower()))
-    lname = space_re.sub(' ', name.strip().lower())
-    xname = space_re.sub(' ', utils.default_process(name.strip().lower()))
+    lident = space_dash_re.sub(' ', simbad.ident.strip().lower())
+    xident = filter_match_name(simbad.ident)
+    lname = space_dash_re.sub(' ', name.strip().lower())
+    xname = filter_match_name(name)
 
     sys_plx = 1000 * u.mas * u.parsec / (match.sys_dist << u.parsec)
 
@@ -2077,183 +2720,6 @@ def get_wikipedia_starbox_simbad_reference(name: str) -> str|None:
         return simbad[1]
 
 
-def get_wikidata_hd_stars(site: pywikibot.Site) -> Generator[pywikibot.ItemPage]:
-    query = '''
-    SELECT ?item WHERE {
-        ?item p:P528 ?statement .
-        ?statement pq:P972 wd:Q111130 .
-    }
-    '''
-
-    return pywikibot.pagegenerators.WikidataSPARQLPageGenerator(query, site=site)
-
-
-def add_wikidata_item(item_id: str, site: pywikibot.Site, conn: sqlite3.Connection):
-    item = pywikibot.ItemPage(wikidata_site, item_id)
-    item_data = item.get()
-    item_aliases = set()
-    item_simbad = set()
-
-    for lang, name in item_data.get('labels', {}).items():
-        item_aliases.add((item_id, name))
-
-    for lang, aliases in item_data.get('aliases', {}).items():
-        for alias in aliases:
-            match_name = space_re.sub(' ', utils.default_process(alias.strip().lower()))
-            item_aliases.add((item_id, alias))
-
-    item_claims = item_data.get('claims', {})
-
-    for claim in item_claims.get('P3083', []):
-        item_simbad.add(claim.getTarget())
-
-    for claim in item_claims.get('P528', []):
-        for source_ref in claim.getSources():
-            for source_claim in source_ref.get('P248', []):
-                source_claim_tgt = source_claim.getTarget()
-                if isinstance(source_claim_tgt, pywikibot.ItemPage) and source_claim_tgt.title() == 'Q654724':
-                    item_simbad.add(claim.getTarget())
-
-    cursor = conn.cursor()
-    cursor.executemany('INSERT INTO wikidata_aliases (item_id, alias, match_name) VALUES (?, ?, ?)', item_aliases)
-
-    cursor = conn.cursor()
-    cursor.executemany('INSERT INTO wikidata_simbad (item_id, ident) VALUES (?, ?, ?)', item_simbad)
-
-    conn.commit()
-
-
-def get_wikidata_star_aliases() -> dict[str, set[tuple[str, str]]]:
-    wikidata_site = pywikibot.Site("wikidata", "wikidata")
-
-    with sqlite3.connect('wikidata.sqlite') as conn:
-        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_idents (item_id TEXT NOT NULL, source TEXT NOT NULL) STRICT')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_idents_item_id ON wikidata_idents (item_id)')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_idents_source ON wikidata_idents (source)')
-
-        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_aliases (item_id TEXT NOT NULL, alias TEXT NOT NULL, match_name TEXT NOT NULL) STRICT')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_aliases_item_id ON wikidata_aliases (item_id)')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_aliases_alias ON wikidata_aliases (alias)')
-
-        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_simbad (item_id TEXT NOT NULL, ident TEXT NOT NULL) STRICT')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_simbad_item_id ON wikidata_simbad (item_id)')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_simbad_ident ON wikidata_simbad (ident)')
-
-        cursor = conn.cursor()
-        cursor.execute('SELECT DISTINCT source FROM wikidata_idents')
-        fetched_sources = set((src for src, in cursor))
-
-        cursor = conn.cursor()
-        cursor.execute('SELECT DISTINCT item_id FROM wikidata_idents')
-        wikidata_items = set((item_id for item_id, in cursor))
-
-        cursor = conn.cursor()
-        cursor.execute('SELECT DISTINCT item_id FROM wikidata_aliases')
-        fetched_items = set((item_id for item_id, in cursor))
-
-        sources = {
-            'HD': get_wikidata_hd_stars
-        }
-
-        for src, fetch in sources.items():
-            if src not in fetched_sources:
-                add_idents = []
-
-                for item in fetch(wikidata_site):
-                    item_id = item.title()
-                    add_idents.append(('HD', item_id))
-                    wikidata_items.add(item_id)
-
-                cursor = conn.cursor()
-                cursor.executemany('INSERT INTO wikidata_idents (source, item_id) VALUES (?, ?)', add_idents)
-                conn.commit()
-
-        for item_id in wikidata_items:
-            if item_id not in fetched_items:
-                add_wikidata_item(item_id, wikidata_site, conn)
-
-        cursor = conn.cursor()
-        cursor.execute(
-            '''
-                SELECT a.match_name, s.ident
-                FROM wikidata_aliases a
-                JOIN wikidata_simbad s ON s.item_id = a.item_id
-            '''
-        )
-
-        name_map = {}
-
-        for row in cursor:
-            name_map.setdefault(row[0], set()).add(row[1])
-
-        return name_map
-
-
-def search_wikidata_entities(name: str) -> set[tuple[str, str, str]]:
-    wikidata_site = pywikibot.Site("wikidata", "wikidata")
-
-    with sqlite3.connect('wikidata.sqlite') as conn:
-        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_idents (item_id TEXT NOT NULL, source TEXT NOT NULL) STRICT')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_idents_item_id ON wikidata_idents (item_id)')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_idents_source ON wikidata_idents (source)')
-
-        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_aliases (item_id TEXT NOT NULL, alias TEXT NOT NULL, match_name TEXT NOT NULL) STRICT')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_aliases_item_id ON wikidata_aliases (item_id)')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_aliases_alias ON wikidata_aliases (alias)')
-
-        conn.cursor().execute('CREATE TABLE IF NOT EXISTS wikidata_simbad (item_id TEXT NOT NULL, ident TEXT NOT NULL) STRICT')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_simbad_item_id ON wikidata_simbad (item_id)')
-        conn.cursor().execute('CREATE INDEX IF NOT EXISTS IX_wikidata_simbad_ident ON wikidata_simbad (ident)')
-
-        cursor = conn.cursor()
-        cursor.execute('SELECT item_id FROM wikidata_idents WHERE source = ?', (f'search:{name}',))
-        item_ids = set((item_id for item_id, in cursor))
-
-        if len(item_ids) == 0:
-            add_idents = set()
-
-            for result in wikidata_site.search_entities(name, 'mul'):
-                item_id = result['id']
-                add_idents.add((f'search:{name}', item_id))
-                item_ids.add(item_id)
-
-            cursor = conn.cursor()
-            cursor.executemany('INSERT INTO wikidata_idents (source, item_id) VALUES (?, ?)', add_idents)
-            conn.commit()
-
-        cursor = conn.cursor()
-        cursor.executemany(
-            '''
-                SELECT DISTINCT item_id
-                FROM wikidata_aliases
-                WHERE item_id IN (
-                    SELECT value
-                    FROM JSON_EACH(?)
-                )')
-            ''',
-            (json.dumps(list(item_ids)), )
-        )
-
-        fetched_items = set((v for v, in cursor))
-
-        for item_id in item_ids:
-            if item_id not in fetched_items:
-                add_wikidata_item(item_id, wikidata_site, conn)
-
-        cursor = conn.cursor()
-        cursor.execute(
-            '''
-                SELECT DISTINCT s.ident, s.item_id, a.alias
-                FROM wikidata_aliases a
-                JOIN wikidata_simbad s ON s.item_id = a.item_id
-                WHERE match_name = ?
-            ''',
-            (space_re.sub(' ', utils.default_process(alias.strip().lower())), )
-        )
-
-        return set(((ident, item_id, alias) for ident, item_id, alias in cursor))
-
-
 def filter_matches(sy_matches: set[SimbadMatch]) -> tuple[bool, set[SimbadMatch]]:
     if any(m.dist_ly < 0.1 and m.dist_indel == 0 and not m.is_alt_name for m in sy_matches):
         return (True, set((m for m in sy_matches if m.dist_ly < 0.1 and m.dist_indel == 0 and not m.is_alt_name)))
@@ -2311,6 +2777,9 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
         for name in get_ed_known_systems(sy_addr):
             names.add(MatchIdent(name, is_alt_name=True, source='known_systems'))
 
+        for name in get_ed_renamed_systems(sy_addr):
+            names.add(MatchIdent(name, source='renamed_systems'))
+
         if sy_matches is None:
             sy_matches = sys_matches.setdefault(entry, {})
 
@@ -2323,7 +2792,7 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
                     source = name.source
                     name = name.ident
 
-                for ident in idents.get(space_re.sub(' ', utils.default_process(name.strip().lower())), []):
+                for ident in idents.get(filter_match_name(name), []):
                     sy_matches.setdefault((name, is_alt_name, source), set()).add(ident)
 
         if sb_oid is not None:
@@ -2336,7 +2805,7 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
                 sb_plx << u.mas if sb_plx is not None else None
             )
 
-            lident = space_re.sub(' ', sb_ident.lower())
+            lident = space_dash_re.sub(' ', sb_ident.lower())
 
             for name in names:
                 max_dist = 1.0
@@ -2349,7 +2818,7 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
                     source = name.source
                     name = name.ident
 
-                lname = space_re.sub(' ', name.lower())
+                lname = space_dash_re.sub(' ', name.lower())
 
                 dist_indel = Indel.normalized_distance(lname, lident)
 
@@ -2376,42 +2845,54 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
             sys.stderr.write(f'Querying Wikidata for {na[0]}\n')
             wiki_names = set()
 
-            for wiki_simbad, wiki_item_id in search_wikidata_entities(na[0]):
+            for wiki_simbad, wiki_item_id, wiki_alias in WikiData.search_entities_by_name(na[0]):
                 for name in get_match_names(wiki_simbad):
-                    wiki_names.add((name, wiki_item_id))
+                    if isinstance(name, MatchIdent):
+                        name = name.ident
+
+                    wiki_names.add((name, wiki_item_id, wiki_alias))
+
+            for sb_entry in sb_entries:
+                if sb_entry.ident.startswith('HD '):
+                    for wiki_simbad, wiki_item_id, wiki_alias in WikiData.search_entities_by_ident(sb_entry.ident):
+                        wiki_names.add((wiki_simbad, wiki_item_id, wiki_alias))
 
             if len(wiki_names) > 0:
-                wiki_idents = systemquery.query_idents(set((n for n, i in wiki_names)))
+                w_names = set()
+                w_aliases = set()
 
-                for _, ident_entries in wiki_itents.items():
+                for wiki_simbad, wiki_item_id, wiki_alias in wiki_names:
+                    name = f'NAME {na[0]}'
+                    ident = f'NAME {wiki_alias}'
+                    lname = space_dash_re.sub(' ', name.lower())
+                    lident = space_dash_re.sub(' ', ident.lower())
+                    dist_indel = Indel.normalized_distance(lname, lident)
+                    
+                    if dist_indel < 0.1:
+                        if isinstance(wiki_simbad, MatchIdent):
+                            wiki_simbad = wiki_simbad.ident
+                        w_names.add(wiki_simbad)
+                        w_aliases.add((wiki_simbad, wiki_item_id, wiki_alias))
+
+                wiki_idents = systemquery.query_idents(w_names)
+
+                for _, ident_entries in wiki_idents.items():
                     for sb_entry in ident_entries:
                         sb_entries.add(sb_entry)
 
-                for entry, _ in entries.item():
+                for entry, _ in entries.items():
                     for sb_entry in sb_entries:
-                        lident = space_re.sub(' ', sb_entry.ident.lower())
-                        wiki_matches = {}
+                        lident = space_dash_re.sub(' ', sb_entry.ident.lower())
 
-                        for name, item_id, alias in wiki_names:
-                            max_dist = 1.0
-                            lname = space_re.sub(' ', name.lower())
-
-                            if isinstance(name, MatchIdent):
-                                max_dist = name.maxdist
-                                name = name.ident
-
-                            if dist_indel <= max_dist:
-                                wiki_matches.setdefault((alias, item_id), []).append((dist_indel, name))
-
-                        for (alias, item_id), wm in wiki_matches.items():
-                            wm.sort()
-                            dist_indel, name = wm[0]
+                        for name, item_id, alias in w_aliases:
+                            lname = space_dash_re.sub(' ', name.lower())
+                            dist_indel = Indel.normalized_distance(lname, lident)
 
                             if dist_indel == 0:
-                                sb_sub = dataclasses.replace(sb_entry, ident=f'NAME {alias}')
-                                sy_matches.add(add_fuzz_distances(entry, sb_sub, f'NAME {na[0]}', False, f'wikidata({item_id}/alias={alias})'))
-                            else:
-                                sy_matches.add(add_fuzz_distances(entry, sb_entry, name, False, f'wikidata({item_id}/alias={alias})'))
+                                name = f'NAME {na[0]}'
+                                ident = f'NAME {alias}'
+                                sb_sub = dataclasses.replace(sb_entry, ident=ident)
+                                sy_matches.add(add_fuzz_distances(entry, sb_sub, name, False, f'wikidata({item_id}/alias={alias})'))
 
                 is_match, sy_matches = filter_matches(sy_matches)
 
@@ -2425,7 +2906,7 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
             else:
                 sys.stderr.write(f'System {na[0]} [{na[1]}] no name match\n')
 
-        sy_matches = set((next(iter(sorted(g, key=lambda m: m.dist_deg))) for _, g in itertools.groupby(sy_matches, key=lambda m: (m.simbad, m.matched_name))))
+        sy_matches = set((next(iter(sorted(g, key=lambda m: m.dist_deg))) for _, g in itertools.groupby(sy_matches, key=lambda m: (m.simbad, m.matched_name, m.match_source))))
 
         for match in sy_matches:
             matches.add(match)
@@ -2447,6 +2928,9 @@ def match_simbad_coords(matches: Collection[SimbadMatch], systemquery: SystemQue
             idents.add(name)
 
         for name in get_ed_known_systems(match.sys_addr):
+            idents.add(name)
+
+        for name in get_ed_renamed_systems(match.sys_addr):
             idents.add(name)
 
     idents = systemquery.query_idents(idents)
@@ -2599,25 +3083,28 @@ def process_matches_db(systemquery: SystemQueryDatabase):
 
     rows = []
     sysaddrs = set()
+    already_processed = set()
+    matchcount = 0
 
     for row in systemquery.get_processed_matches():
+        already_processed.add(row.sys_addr)
         sysaddrs.add(row.sys_addr)
-
-    matchcount = 0
+        matchcount += 1
 
     matches_by_system = {}
 
     for row in row_iter:
-        if row.sys_addr not in sysaddrs and len(rows) != 0 and (len(sysaddrs) % 10) == 0:
-            sys.stderr.write(f'Processing {len(rows)} rows from {len(sysaddrs)} systems [{rows[0].sys_name} .. {rows[-1].sys_name}]\n')
-            matches = match_simbad_syscoords(rows, systemquery)
-            save_matches_db(matches, systemquery, matches_by_system)
-            matchcount += len(matches)
-            sys.stderr.write(f'Processed {matchcount} matches from {len(sysaddrs)} systems\n')
-            rows = []
+        if row.sys_addr not in already_processed:
+            if row.sys_addr not in sysaddrs and len(rows) != 0 and (len(sysaddrs) % 10) == 0:
+                sys.stderr.write(f'Processing {len(rows)} rows from {len(sysaddrs)} systems [{rows[0].sys_name} .. {rows[-1].sys_name}]\n')
+                matches = match_simbad_syscoords(rows, systemquery)
+                save_matches_db(matches, systemquery, matches_by_system)
+                matchcount += len(matches)
+                sys.stderr.write(f'Processed {matchcount} matches from {len(sysaddrs)} systems\n')
+                rows = []
 
-        rows.append(row)
-        sysaddrs.add(row.sys_addr)
+            rows.append(row)
+            sysaddrs.add(row.sys_addr)
 
     sys.stderr.write(f'Processing {len(rows)} rows from {len(sysaddrs)} systems\n')
     matches = match_simbad_syscoords(rows, systemquery)
@@ -2760,7 +3247,7 @@ def fetch_all_simbad_ident(simbad: Simbad, dest: SystemQueryDatabase, start_oid:
                 int(oidref),
                 str(ident),
                 str(update_date),
-                space_re.sub(' ', utils.default_process(str(ident).strip().lower()))
+                filter_match_name(str(ident))
             ))
 
         if len(entries) == 0:
@@ -2807,8 +3294,6 @@ def fetch_all_simbad_idents_basic(simbad: Simbad, dest: SystemQueryDatabase):
 
 
 def fetch_spansh_systems(systemquery: SystemQueryDatabase):
-    pgsysre = re.compile('^([A-Za-z0-9.()\' -]+?) ([A-Z][A-Z]-[A-Z]) ([a-h])(?:([0-9]+)-|)([0-9]+)$', re.IGNORECASE)
-
     systems: set[SystemCoords] = set()
 
     if not os.path.exists('systems.json.gz'):
@@ -2816,7 +3301,7 @@ def fetch_spansh_systems(systemquery: SystemQueryDatabase):
 
         with urllib.request.urlopen('https://downloads.spansh.co.uk/systems.json.gz') as sgz:
             with open('systems.json.gz', 'wb') as ogz:
-                ogz.write(sgz.read())
+                shutil.copyfileobj(sgz, ogz)
 
     print('Processing systems from Spansh')
 
@@ -2916,6 +3401,7 @@ def main():
         simbad = Simbad()
         #fetch_all_simbad_idents_basic(simbad, systemquery)
         #fetch_spansh_systems(systemquery)
+        #WikiData.process_prefiltered_dump()
         return process_matches_db(systemquery)
     except Exception:
         traceback.print_exc()
