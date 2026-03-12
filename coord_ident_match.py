@@ -2842,20 +2842,31 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
         is_match, sy_matches = filter_matches(sy_matches)
 
         if not is_match and not any(min(m.dist_indel, m.dist_jw) < 0.1 and not m.is_alt_name for m in sy_matches):
-            sys.stderr.write(f'Querying Wikidata for {na[0]}\n')
             wiki_names = set()
+            check_names = set()
 
-            for wiki_simbad, wiki_item_id, wiki_alias in WikiData.search_entities_by_name(na[0]):
-                for name in get_match_names(wiki_simbad):
-                    if isinstance(name, MatchIdent):
-                        name = name.ident
+            for _, names in entries.items():
+                for (name, is_alt_name, _), _ in names.items():
+                    if not is_alt_name:
+                        check_names.add(name)
 
-                    wiki_names.add((name, wiki_item_id, wiki_alias))
+            for name in check_names:
+                sys.stderr.write(f'Querying Wikidata for {name}\n')
+
+                for wiki_simbad, wiki_item_id, wiki_alias in WikiData.search_entities_by_name(name):
+                    for name in get_match_names(wiki_simbad):
+                        if isinstance(name, MatchIdent):
+                            name = name.ident
+
+                        wiki_names.add((name, wiki_item_id, wiki_alias))
+
+            checked_simbad_oids = set()
 
             for sb_entry in sb_entries:
-                if sb_entry.ident.startswith('HD '):
+                if sb_entry.oid not in checked_simbad_oids:
                     for wiki_simbad, wiki_item_id, wiki_alias in WikiData.search_entities_by_ident(sb_entry.ident):
                         wiki_names.add((wiki_simbad, wiki_item_id, wiki_alias))
+                        checked_simbad_oids.add(sb_entry.oid)
 
             if len(wiki_names) > 0:
                 w_names = set()
@@ -2867,7 +2878,7 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable], idents: dict[str,
                     lname = space_dash_re.sub(' ', name.lower())
                     lident = space_dash_re.sub(' ', ident.lower())
                     dist_indel = Indel.normalized_distance(lname, lident)
-                    
+
                     if dist_indel < 0.1:
                         if isinstance(wiki_simbad, MatchIdent):
                             wiki_simbad = wiki_simbad.ident
