@@ -1,0 +1,6 @@
+astropy
+astroquery
+mysqlclient
+rapidfuzz
+frozendict
+pywikibot
