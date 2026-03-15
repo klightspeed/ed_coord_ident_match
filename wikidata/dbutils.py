@@ -28,9 +28,10 @@ def get_entities_by_ident(name: str, conn: sqlite3.Connection) -> set[WikiDataId
             SELECT DISTINCT s.ident, s.item_id, a.alias
             FROM wikidata_aliases a
             JOIN wikidata_simbad s ON s.item_id = a.item_id
-            WHERE s.ident = ?
+            JOIN wikidata_aliases a2 ON a2.item_id = a.item_id AND a2.alias = s.ident
+            WHERE a2.match_name = ?
         ''',
-        (name, )
+        (filter_match_name(name), )
     )
 
     return set((WikiDataIdent(ident, item_id, alias) for ident, item_id, alias in cursor))

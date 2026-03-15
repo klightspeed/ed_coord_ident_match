@@ -183,17 +183,26 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable],
                     sources = set(((is_alt_name, is_simbad, source) for is_alt_name, is_simbad, source in sources if not is_alt_name))
 
                 if any(not is_simbad for _, is_simbad, _ in sources):
-                    sources = set(((is_alt_name, is_simbad, source) for is_alt_name, is_simbad, source in sources if not is_simbad))
+                    for wiki_simbad, wiki_item_id, wiki_alias in wikidata.search_entities_by_name(sy_name):
+                        for name in get_match_names(wiki_simbad):
+                            if isinstance(name, MatchIdent):
+                                name = name.ident
 
-                for wiki_simbad, wiki_item_id, wiki_alias in wikidata.search_entities_by_name(sy_name):
-                    for name in get_match_names(wiki_simbad):
-                        if isinstance(name, MatchIdent):
-                            name = name.ident
+                            wiki_sources = wiki_names.setdefault((name, wiki_item_id, wiki_alias), set())
 
-                        wiki_sources = wiki_names.setdefault((name, wiki_item_id, wiki_alias), set())
+                            for is_alt_name, is_simbad, source in sources:
+                                wiki_sources.add((is_alt_name, is_simbad, source))
 
-                        for is_alt_name, is_simbad, source in sources:
-                            wiki_sources.add((is_alt_name, is_simbad, source))
+                if any(is_simbad for _, is_simbad, _ in sources):
+                    for wiki_simbad, wiki_item_id, wiki_alias in wikidata.search_entities_by_ident(sy_name):
+                        for name in get_match_names(wiki_simbad):
+                            if isinstance(name, MatchIdent):
+                                name = name.ident
+
+                            wiki_sources = wiki_names.setdefault((name, wiki_item_id, wiki_alias), set())
+
+                            for is_alt_name, is_simbad, source in sources:
+                                wiki_sources.add((is_alt_name, is_simbad, source))
 
             if len(wiki_names) > 0:
                 w_names = set()
