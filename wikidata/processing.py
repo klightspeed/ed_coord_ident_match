@@ -328,6 +328,8 @@ class WikiData:
         if use_astro:
             return dbutils.get_entities_by_ident(name, conn)
 
+        sys.stderr.write(f'Querying Wikidata for ident {name}\n')
+
         dbutils.create_tables(conn)
 
         cursor = conn.cursor()
@@ -377,6 +379,8 @@ class WikiData:
 
         if use_astro:
             return dbutils.get_entities_by_name(name, conn)
+
+        sys.stderr.write(f'Querying Wikidata for name {name}\n')
 
         dbutils.create_tables(conn)
 

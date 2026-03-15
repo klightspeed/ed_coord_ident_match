@@ -177,8 +177,6 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable],
             wiki_names = {}
 
             for sy_name, sources in sy_names.items():
-                sys.stderr.write(f'Querying Wikidata for {sy_name}\n')
-
                 if any(not is_alt_name for is_alt_name, _, _ in sources):
                     sources = set(((is_alt_name, is_simbad, source) for is_alt_name, is_simbad, source in sources if not is_alt_name))
 
