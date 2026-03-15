@@ -9,6 +9,7 @@ import logging
 import sys
 import re
 from astropy.coordinates import angular_separation
+from itertools import batched
 
 logger = logging.getLogger(__name__)
 
@@ -20,41 +21,42 @@ class SystemQuerySqlite3(SystemQueryDatabase):
         self.conn = conn
 
     def query_idents(self, names: set[str]) -> dict[str, set[SimbadEntry]]:
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            '''
-                SELECT
-                    basic.oid,
-                    basic.main_id,
-                    ident.id,
-                    basic.ra,
-                    basic.`dec`,
-                    basic.plx_value
-                FROM JSON_EACH(?) sys_names
-                JOIN simbad_ident ident ON ident.match_name = JSON_EXTRACT(sys_names.value, '$.name')
-                JOIN simbad_basic basic ON basic.oid = ident.oidref
-                WHERE basic.ra IS NOT NULL
-                  AND basic.dec IS NOT NULL
-            ''',
-            (json.dumps([{'name': filter_match_name(n)} for n in names]),)
-        )
-
         idents = {}
 
-        for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in cursor:
-            name = filter_match_name(sb_ident)
+        for grp in batched(names, 1000):
+            cursor = self.conn.cursor()
 
-            entry = SimbadEntry(
-                sb_oid,
-                sb_main_id,
-                sb_ident,
-                sb_ra << u.deg,
-                sb_dec << u.deg,
-                sb_plx << u.mas if sb_plx is not None else None
+            cursor.execute(
+                '''
+                    SELECT
+                        basic.oid,
+                        basic.main_id,
+                        ident.id,
+                        basic.ra,
+                        basic.`dec`,
+                        basic.plx_value
+                    FROM JSON_EACH(?) sys_names
+                    JOIN simbad_ident ident ON ident.match_name = JSON_EXTRACT(sys_names.value, '$.name')
+                    JOIN simbad_basic basic ON basic.oid = ident.oidref
+                    WHERE basic.ra IS NOT NULL
+                      AND basic.dec IS NOT NULL
+                ''',
+                (json.dumps([{'name': filter_match_name(n)} for n in names]),)
             )
 
-            idents.setdefault(name, set()).add(entry)
+            for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in cursor:
+                name = filter_match_name(sb_ident)
+
+                entry = SimbadEntry(
+                    sb_oid,
+                    sb_main_id,
+                    sb_ident,
+                    sb_ra << u.deg,
+                    sb_dec << u.deg,
+                    sb_plx << u.mas if sb_plx is not None else None
+                )
+
+                idents.setdefault(name, set()).add(entry)
 
         return idents
 

@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 from astropy.coordinates import angular_separation
+from itertools import batched
 
 logger = logging.getLogger(__name__)
 
@@ -24,43 +25,44 @@ class SystemQueryMariaDB(SystemQueryDatabase):
 
     def query_idents(self, names: set[str]) -> dict[str, set[SimbadEntry]]:
         with self.connect() as conn:
-            cursor = conn.cursor()
-
-            cursor.execute(
-                '''
-                    SELECT
-                        basic.oid,
-                        basic.main_id,
-                        ident.id,
-                        basic.ra,
-                        basic.`dec`,
-                        basic.plx_value
-                    FROM JSON_TABLE(%s, '$[*]' COLUMNS(
-                        match_name VARCHAR(255) COLLATE utf8mb4_uca1400_ai_ci PATH '$.name'
-                    )) sys_names
-                    JOIN simbad_ident ident ON ident.match_name = sys_names.match_name
-                    JOIN simbad_basic basic ON basic.oid = ident.oidref
-                    WHERE basic.ra IS NOT NULL
-                    AND basic.`dec` IS NOT NULL
-                ''',
-                (json.dumps([{'name': filter_match_name(n)} for n in names]),)
-            )
-
             idents = {}
 
-            for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in cursor:
-                name = filter_match_name(sb_ident)
+            for grp in batched(names, 1000):
+                cursor = conn.cursor()
 
-                entry = SimbadEntry(
-                    int(sb_oid),
-                    str(sb_main_id),
-                    str(sb_ident),
-                    float(sb_ra) << u.deg,
-                    float(sb_dec) << u.deg,
-                    float(sb_plx) << u.mas if sb_plx is not None else None
+                cursor.execute(
+                    '''
+                        SELECT
+                            basic.oid,
+                            basic.main_id,
+                            ident.id,
+                            basic.ra,
+                            basic.`dec`,
+                            basic.plx_value
+                        FROM JSON_TABLE(%s, '$[*]' COLUMNS(
+                            match_name VARCHAR(255) COLLATE utf8mb4_uca1400_ai_ci PATH '$.name'
+                        )) sys_names
+                        JOIN simbad_ident ident ON ident.match_name = sys_names.match_name
+                        JOIN simbad_basic basic ON basic.oid = ident.oidref
+                        WHERE basic.ra IS NOT NULL
+                        AND basic.`dec` IS NOT NULL
+                    ''',
+                    (json.dumps([{'name': filter_match_name(n)} for n in grp]),)
                 )
 
-                idents.setdefault(name, set()).add(entry)
+                for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in cursor:
+                    name = filter_match_name(sb_ident)
+
+                    entry = SimbadEntry(
+                        int(sb_oid),
+                        str(sb_main_id),
+                        str(sb_ident),
+                        float(sb_ra) << u.deg,
+                        float(sb_dec) << u.deg,
+                        float(sb_plx) << u.mas if sb_plx is not None else None
+                    )
+
+                    idents.setdefault(name, set()).add(entry)
 
             return idents
 
