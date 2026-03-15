@@ -201,7 +201,7 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable],
 
                 for (wiki_simbad, wiki_item_id, wiki_alias), wiki_sources in wiki_names.items():
                     for check_name, sources in sy_names.items():
-                        if any((is_simbad for _, is_simbad, _ in sources)):
+                        if any((not is_simbad for _, is_simbad, _ in sources)):
                             name = f'NAME {check_name}'
                             ident = f'NAME {wiki_alias}'
                             lname = space_dash_re.sub(' ', name.lower())
@@ -214,7 +214,8 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable],
 
                                 w_names.add(wiki_simbad)
 
-                                w_sources = w_aliases.setdefault((wiki_simbad, wiki_item_id, wiki_alias, check_name), set())
+                                w_by_name = w_aliases.setdefault(filter_match_name(wiki_simbad), {})
+                                w_sources = w_by_name.setdefault((wiki_simbad, wiki_item_id, wiki_alias, check_name), set())
 
                                 for is_alt_name, is_simbad, source in sources:
                                     if not is_simbad:
@@ -232,16 +233,20 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable],
 
                 for entry, _ in entries.items():
                     for sb_entry in sb_entries:
+                        w_by_name = w_aliases.get(filter_match_name(sb_entry.ident))
+
+                        if w_by_name is None:
+                            continue
+
                         lident = space_dash_re.sub(' ', sb_entry.ident.lower())
 
-                        for (name, item_id, alias, check_name), sources in w_aliases.items():
+                        for (name, item_id, alias, check_name), sources in w_by_name.items():
                             if any(not is_alt_name for is_alt_name, _ in sources):
                                 sources = set(((is_alt_name, source) for is_alt_name, source in sources if not is_alt_name))
 
                             lname = space_dash_re.sub(' ', name.lower())
-                            dist_indel = Indel.normalized_distance(lname, lident)
 
-                            if dist_indel == 0:
+                            if lname == lident:
                                 name = f'NAME {check_name}'
                                 ident = f'NAME {alias}'
                                 sb_sub = dataclasses.replace(sb_entry, ident=ident)
