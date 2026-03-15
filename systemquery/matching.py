@@ -106,16 +106,18 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable],
 
             for name in names:
                 is_alt_name = False
+                is_simbad = False
                 source = None
 
                 if isinstance(name, MatchIdent):
                     is_alt_name = name.is_alt_name
+                    is_simbad = name.is_simbad
                     source = name.source
                     name = name.ident
 
                 for ident in idents.get(filter_match_name(name), []):
-                    sy_matches.setdefault((name, is_alt_name, source), set()).add(ident)
-                    sys_mcounts.add((name, is_alt_name, source, ident))
+                    sy_matches.setdefault((name, is_alt_name, is_simbad, source), set()).add(ident)
+                    sys_mcounts.add((name, is_alt_name, is_simbad, source, ident))
 
         if sb_oid is not None:
             sb_entry = SimbadEntry(
@@ -132,23 +134,28 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable],
             for name in names:
                 max_dist = 1.0
                 is_alt_name = False
+                is_simbad = False
                 source = None
 
                 if isinstance(name, MatchIdent):
                     max_dist = name.maxdist
                     is_alt_name = name.is_alt_name
+                    is_simbad = name.is_simbad
                     source = name.source
                     name = name.ident
 
                 lname = space_dash_re.sub(' ', name.lower())
+
+                if is_simbad and lname != lident:
+                    continue
 
                 dist_indel = Indel.normalized_distance(lname, lident)
 
                 if dist_indel > max_dist:
                     continue
 
-                sy_matches.setdefault((name, is_alt_name, source), set()).add(sb_entry)
-                sys_mcounts.add((name, is_alt_name, source, sb_entry))
+                sy_matches.setdefault((name, is_alt_name, is_simbad, source), set()).add(sb_entry)
+                sys_mcounts.add((name, is_alt_name, is_simbad, source, sb_entry))
 
     for na, entries in base_matches.items():
         sy_matches = set()
@@ -160,8 +167,8 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable],
         sys.stderr.write(f'Checking system {na[0]} [{na[1]}] ({len(sys_mcounts)} permutations to check)\n')
 
         for entry, names in entries.items():
-            for (name, is_alt_name, source), nmatches in names.items():
-                sy_names.setdefault(name, set()).add((is_alt_name, False, source))
+            for (name, is_alt_name, is_simbad, source), nmatches in names.items():
+                sy_names.setdefault(name, set()).add((is_alt_name, is_simbad, source))
 
                 for sb_entry in nmatches:
                     sb_entries.add(sb_entry)

@@ -32,7 +32,7 @@ def query_cat(cat: CatQuery) -> Iterable[str|MatchIdent]:
                 mask &= tbl[n] == v
 
         for row in tbl[mask]:
-            yield MatchIdent(cat.result.format(** { k: row.get(k) for k in row.keys() }), source=f'{cat.source}:{cat.catalogue}')
+            yield MatchIdent(cat.result.format(** { k: row.get(k) for k in row.keys() }), is_simbad=True, source=f'{cat.source}:{cat.catalogue}')
 
 
 def get_match_names(name: str) -> set[str|MatchIdent]:

@@ -18,6 +18,7 @@ class MatchIdent:
     ident: str
     maxdist: float = 1.0
     is_alt_name: bool = False
+    is_simbad: bool = False
     source: str|None = None
 
 
