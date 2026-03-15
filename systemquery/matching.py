@@ -205,6 +205,7 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable],
                                 wiki_sources.add((is_alt_name, is_simbad, source))
 
             if len(wiki_names) > 0:
+                sys.stderr.write(f'Checking {len(wiki_names)} names from Wikidata')
                 w_names = set()
                 w_aliases = {}
 
@@ -233,6 +234,8 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable],
                                 for is_alt_name, is_simbad, source in wiki_sources:
                                     if not is_simbad:
                                         w_sources.add((is_alt_name, source))
+
+                sys.stderr.write(f'Checking {len(w_names)} idents from Wikidata')
 
                 wiki_idents = systemquery.query_idents(w_names)
 
