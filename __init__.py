@@ -62,6 +62,7 @@ def main():
         type=str,
         default='simbad.sqlite',
         dest='simbad_db_filename',
+        help='Database file for SQLite3 database'
     )
 
     arg_parser.add_argument(
@@ -69,64 +70,74 @@ def main():
         type=str,
         default='simbad',
         dest='simbad_db_name',
+        help='Database name for MariaDB database'
     )
 
     arg_parser.add_argument(
         '--simbad-db-host',
         type=str,
         default=None,
-        dest='simbad_db_host'
+        dest='simbad_db_host',
+        help='Database host for MariaDB database'
     )
 
     arg_parser.add_argument(
         '--simbad-db-port',
         type=int,
         default=None,
-        dest='simbad_db_port'
+        dest='simbad_db_port',
+        help='MariaDB server port'
     )
 
     arg_parser.add_argument(
         '--simbad-db-user',
         type=str,
         default=None,
-        dest='simbad_db_user'
+        dest='simbad_db_user',
+        help='Override MariaDB username'
     )
 
     arg_parser.add_argument(
         '--simbad-db-password',
         type=str,
         default=None,
-        dest='simbad_db_password'
+        dest='simbad_db_password',
+        help='Override MariaDB password'
     )
 
     arg_parser.add_argument(
         '--fetch-simbad',
         action='store_true',
         dest='fetch_simbad',
+        help='Fetch basic and ident tables from Simbad'
     )
 
     arg_parser.add_argument(
         '--fetch-spansh',
         action='store_true',
         dest='fetch_spansh',
+        help='Fetch and process systems in Spansh systems dump'
     )
 
     arg_parser.add_argument(
         '--fetch-wikidata',
         action='store_true',
         dest='fetch_wikidata',
+        help='Fetch and process pre-filtered Wikidata dump'
     )
 
     arg_parser.add_argument(
         '--process-matches-db',
         action='store_true',
         dest='process_matches_db',
+        help='Process systems from Spansh and match to Simbad objects'
     )
 
     arg_parser.add_argument(
         '--filter-wikidata-dump',
         type=str,
-        dest='filter_wikidata_dump'
+        dest='filter_wikidata_dump',
+        help='Filter specified local full Wikidata dump for entities with astronomical catalog identifiers to pre-filtered Wikidata dump'
     )
 
     arg_parser.add_argument(
@@ -134,6 +145,7 @@ def main():
         type=str,
         default='.',
         dest='cache_dir',
+        help='Directory in which to store data and cache files. Requires at least 20GB of space, or 30GB if using SQLite database'
     )
 
     args = arg_parser.parse_args()
