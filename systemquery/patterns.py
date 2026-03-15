@@ -241,5 +241,7 @@ patterns: list[tuple[re.Pattern, list[Callable[[re.Match], str|CatQuery|MatchIde
     (re.compile(f'(.*?) {r_const}', re.IGNORECASE),
      [lambda m: f'NAME {m.group(1)} {s_const(m)}',
       lambda m: f'HIDDEN NAME {m.group(1)} {s_const(m)}',
-      lambda m: f'{m.group(1)} {s_const(m)}'])
+      lambda m: f'{m.group(1)} {s_const(m)}']),
+    (re.compile('EES2009 Persei (J[0-9]+[+-][0-9]+)', re.IGNORECASE),
+     [lambda m: f'2MASS {m.group(1)}'])
 ]
