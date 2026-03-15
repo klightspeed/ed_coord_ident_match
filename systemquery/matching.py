@@ -276,7 +276,7 @@ def process_matches(rows: Iterable[SimbadTableMatch|Iterable],
         min_exact_dist_deg = min([m.dist_deg for m in sy_matches if min(m.dist_indel, m.dist_jw) == 0 and not m.is_alt_name] or [None])
         by_dist = sorted((m for m in sy_matches if min(m.dist_indel, m.dist_jw) < 0.2 and min(m.dist_ly, m.dist_deg) < 1 and not m.is_alt_name), key=lambda m: min(m.dist_ly, m.dist_deg) + min(m.dist_indel, m.dist_jw))
 
-        if min_dist_deg == min_exact_dist_deg:
+        if min_dist_deg is not None and min_dist_deg == min_exact_dist_deg:
             sys.stderr.write(f'System {na[0]} [{na[1]}] name match, dist_deg={min_dist_deg}, dist_ly={min_dist_ly}\n')
         elif min_dist_deg is not None:
             sys.stderr.write(f'System {na[0]} [{na[1]}] fuzzy name match, dist_deg={min_dist_deg}, dist_ly={min_dist_ly}\n')
