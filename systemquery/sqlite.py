@@ -41,7 +41,7 @@ class SystemQuerySqlite3(SystemQueryDatabase):
                     WHERE basic.ra IS NOT NULL
                       AND basic.dec IS NOT NULL
                 ''',
-                (json.dumps([{'name': filter_match_name(n)} for n in names]),)
+                (json.dumps([{'name': filter_match_name(n)} for n in grp]),)
             )
 
             for sb_oid, sb_main_id, sb_ident, sb_ra, sb_dec, sb_plx in cursor:
