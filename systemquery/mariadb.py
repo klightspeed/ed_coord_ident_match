@@ -16,7 +16,7 @@ class SystemQueryMariaDB(SystemQueryDatabase):
     conn: MySQLdb.Connection
 
     def __init__(self, **kwargs):
-        self.conn_opts = {k: v for k, v in kwargs if v is not None}
+        self.conn_opts = {k: v for k, v in kwargs.items() if v is not None}
         self.conn = self.connect()
 
     def connect(self):
