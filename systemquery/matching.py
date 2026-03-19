@@ -476,7 +476,7 @@ def process_matches_db(systemquery: SystemQueryDatabase,
         matchcount += 1
 
     for row in row_iter:
-        if row.sys_addr not in already_processed:
+        if row.sys_addr not in already_processed and row.sys_dist >= 4:
             if row.sys_addr not in sysaddrs and len(rows) != 0 and (len(sysaddrs) % 10) == 0:
                 sys.stderr.write(f'Processing {len(rows)} rows from {len(sysaddrs)} systems [{rows[0].sys_name} .. {rows[-1].sys_name}]\n')
                 matches = match_simbad_syscoords(rows, systemquery, wikidata)
